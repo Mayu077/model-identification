@@ -77,9 +77,15 @@ export function validateContainerISO6346(raw: string): boolean {
   if (!/^[A-Z]{4}\d{7}$/.test(csc)) return false
   let sum = 0
   for (let i = 0; i < 10; i++) {
-    let n = csc.charCodeAt(i)
-    n -= n < 58 ? 48 : 55
-    n += Math.floor((n - 1) / 10)
+    const ch = csc.charCodeAt(i)
+    let n: number
+    if (ch < 58) {
+      n = ch - 48 // digit face value
+    } else {
+      // Letters: A=10, B=12, C=13 ... skipping multiples of 11 (no 11/22/33)
+      const l = ch - 64 // A=1 ... Z=26
+      n = l + 9 + Math.floor((l + 8) / 10)
+    }
     sum += n * Math.pow(2, i)
   }
   return (sum % 11) % 10 === Number.parseInt(csc[10], 10)
