@@ -151,9 +151,34 @@ function isRetryableError(err: unknown): boolean {
   )
 }
 
+// Per-attempt timeout: a hung free-tier provider must not eat the whole
+// serverless time budget (Vercel kills the function at maxDuration -> 504).
+const ATTEMPT_TIMEOUT_MS = 25_000
+// Total budget: stay safely under the route's maxDuration = 60s so we can
+// return a real JSON error instead of a gateway 504.
+const TOTAL_BUDGET_MS = 50_000
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`AI provider timed out after ${ms / 1000}s`)),
+          ms,
+        )
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * Run `fn` against candidates for the task, rotating providers/keys on
- * quota / rate-limit / auth errors. Throws the last error if all fail.
+ * quota / rate-limit / auth errors AND per-attempt timeouts.
+ * Throws the last error if all fail or the total budget is exhausted.
  */
 export async function withModelRotation<T>(
   task: TaskType,
@@ -165,13 +190,20 @@ export async function withModelRotation<T>(
       "No AI API keys configured. Add at least one of GEMINI_API_KEY_1, GROQ_API_KEY_1, OPENROUTER_API_KEY_1 or NVIDIA_API_KEY_1 in project environment variables.",
     )
   }
+  const started = Date.now()
   let lastError: unknown
   for (const candidate of candidates) {
+    const remaining = TOTAL_BUDGET_MS - (Date.now() - started)
+    if (remaining < 5_000) break // not enough time for another attempt
     try {
-      return await fn(candidate.model, candidate)
+      return await withTimeout(
+        fn(candidate.model, candidate),
+        Math.min(ATTEMPT_TIMEOUT_MS, remaining),
+      )
     } catch (err) {
       lastError = err
-      if (!isRetryableError(err)) throw err
+      const timedOut = err instanceof Error && err.message.includes("timed out")
+      if (!timedOut && !isRetryableError(err)) throw err
       console.log(
         `[ai-router] ${candidate.provider}/${candidate.modelId} key#${candidate.keyIndex + 1} failed, rotating:`,
         err instanceof Error ? err.message.slice(0, 200) : err,

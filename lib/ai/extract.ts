@@ -13,11 +13,15 @@ const TRIP_EXTRACTION_PROMPT = `You are reading trip documents from an Indian co
 
 DOCUMENT TYPE A — HANDWRITTEN TRIP CARD: a table where each row is one trip with container number, size, from-location, to-location, and date. Extract EVERY visible trip row. Do NOT invent rows that are not on the card. If a value is unreadable, make your best guess from context but never fabricate a whole entry.
 
-DOCUMENT TYPE B — COMPUTER-PRINTED TERMINAL RECEIPT(S): printed tickets/EIR slips from port terminals. One image may contain MULTIPLE receipts — extract one trip per receipt. The port is identified by the terminal company name printed on the receipt:
+DOCUMENT TYPE B — COMPUTER-PRINTED TERMINAL RECEIPT(S): printed tickets/EIR slips from port terminals. One image may contain MULTIPLE receipts — extract one trip per receipt.
+
+DETERMINING THE PORT — PRIORITY ORDER (higher rule wins):
+1. EXPLICIT DESTINATION/DELIVERY TEXT on the form body, e.g. "CONTAINER DELIVERY TO JNPT" means the port is JNPT — regardless of whose letterhead the form is on. PSA Mumbai operates BMCT but also issues forms (EFORM 13 etc.) for containers delivered to OTHER terminals like JNPT, so never assume PSA Mumbai = BMCT when a delivery-to/destination terminal is printed.
+2. Terminal name in the receipt heading/letterhead:
 - "GATEWAY TERMINALS INDIA" -> GTI
 - "DP World Nhava Sheva" / "Nhava Sheva ICT" -> NSICT
 - "Nhava Sheva India Gateway Terminal" -> NSIGT
-- "PSA Mumbai" / "BMCT" -> BMCT
+- "PSA Mumbai" / "BMCT" / "Bharat Mumbai Container Terminal" -> BMCT (only when no other destination terminal is printed on the form)
 - "JNPCT" / "Jawaharlal Nehru" -> JNPT
 - "JNBaxe" / "JN Baxe" -> JNB
 Reading a receipt:
