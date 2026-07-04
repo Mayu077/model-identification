@@ -69,6 +69,33 @@ export function billSize(size: string, tripType: string): string {
 // write partial numbers, so we accept 4 letters + 6-7 digits but flag others.
 export const CONTAINER_REGEX = /^[A-Z]{4}\d{6,7}$/
 
+// ---------- ISO 6346 check digit validation ----------
+// Every standard 11-char container number's last digit is a checksum.
+// Letter values skip multiples of 11 (A=10, B=12, ... no 11/22/33).
+export function validateContainerISO6346(raw: string): boolean {
+  const csc = raw.toUpperCase().replace(/[^A-Z0-9]+/g, "")
+  if (!/^[A-Z]{4}\d{7}$/.test(csc)) return false
+  let sum = 0
+  for (let i = 0; i < 10; i++) {
+    let n = csc.charCodeAt(i)
+    n -= n < 58 ? 48 : 55
+    n += Math.floor((n - 1) / 10)
+    sum += n * Math.pow(2, i)
+  }
+  return (sum % 11) % 10 === Number.parseInt(csc[10], 10)
+}
+
+// Full container check: format + checksum. Returns a warning string or null.
+export function containerWarning(containerNo: string, label = "Container"): string | null {
+  if (!CONTAINER_REGEX.test(containerNo)) {
+    return `${label} "${containerNo}" doesn't match the standard format (4 letters + 7 digits)`
+  }
+  if (containerNo.length === 11 && !validateContainerISO6346(containerNo)) {
+    return `${label} "${containerNo}" FAILED the ISO 6346 check digit — likely a misread character, verify against the trip card`
+  }
+  return null
+}
+
 export const extractedTripSchema = z.object({
   tripDate: z
     .string()
@@ -101,11 +128,11 @@ export function sanitizeExtractedTrip(t: ExtractedTrip): {
     ? t.containerNo2.toUpperCase().replace(/[^A-Z0-9]/g, "")
     : null
 
-  if (!CONTAINER_REGEX.test(containerNo)) {
-    warnings.push(`Container "${containerNo}" doesn't match the standard format (4 letters + 7 digits)`)
-  }
-  if (containerNo2 && !CONTAINER_REGEX.test(containerNo2)) {
-    warnings.push(`Container "${containerNo2}" doesn't match the standard format`)
+  const w1 = containerWarning(containerNo)
+  if (w1) warnings.push(w1)
+  if (containerNo2) {
+    const w2 = containerWarning(containerNo2, "Container 2")
+    if (w2) warnings.push(w2)
   }
 
   const fromLocation = correctLocation(t.fromLocation)

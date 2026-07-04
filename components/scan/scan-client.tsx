@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react"
 import { saveTrips, type SaveTripsResult } from "@/app/actions/trips"
-import type { ExtractedTrip } from "@/lib/domain"
+import { containerWarning, type ExtractedTrip } from "@/lib/domain"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -257,11 +257,19 @@ export function ScanClient() {
                       <Input
                         id={`cn-${i}`}
                         value={row.containerNo}
-                        className="font-mono"
+                        aria-invalid={containerWarning(row.containerNo) !== null}
+                        className={
+                          containerWarning(row.containerNo)
+                            ? "font-mono border-destructive text-destructive focus-visible:ring-destructive"
+                            : "font-mono"
+                        }
                         onChange={(e) =>
                           updateRow(i, { containerNo: e.target.value.toUpperCase() })
                         }
                       />
+                      {containerWarning(row.containerNo) && (
+                        <p className="text-xs text-destructive">Check digit failed — verify</p>
+                      )}
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="text-xs text-muted-foreground" htmlFor={`size-${i}`}>
@@ -300,11 +308,19 @@ export function ScanClient() {
                         <Input
                           id={`cn2-${i}`}
                           value={row.containerNo2 ?? ""}
-                          className="font-mono"
+                          aria-invalid={!!row.containerNo2 && containerWarning(row.containerNo2) !== null}
+                          className={
+                            row.containerNo2 && containerWarning(row.containerNo2)
+                              ? "font-mono border-destructive text-destructive focus-visible:ring-destructive"
+                              : "font-mono"
+                          }
                           onChange={(e) =>
                             updateRow(i, { containerNo2: e.target.value.toUpperCase() })
                           }
                         />
+                        {row.containerNo2 && containerWarning(row.containerNo2) && (
+                          <p className="text-xs text-destructive">Check digit failed — verify</p>
+                        )}
                       </div>
                     )}
                     <div className="flex flex-col gap-1">

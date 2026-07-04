@@ -14,7 +14,8 @@ const TRIP_EXTRACTION_PROMPT = `You are reading a handwritten trip card from an 
 Each row on the card is one trip with: container number, size, from-location, to-location, and date. Extract EVERY visible trip row. Do NOT invent rows that are not on the card. If a value is unreadable, make your best guess from context but never fabricate a whole entry.
 
 Rules:
-- Container numbers are 4 letters followed by 7 digits (e.g. DFSU7533469). Fix obvious OCR confusions (O vs 0, I vs 1, S vs 5) so the result matches this pattern.
+- Container numbers are 4 letters followed by 7 digits (e.g. DFSU7533469). Fix obvious OCR confusions (O vs 0, I vs 1, S vs 5, T vs E, T vs I) so the result matches this pattern.
+- ISO 6346 CHECK DIGIT VERIFICATION (MANDATORY): the 11th character of every container number is a mathematical check digit. Before outputting a container number, verify it: convert each of the first 10 characters to a value (digits = face value; letters A=10, B=12, C=13 ... skipping multiples of 11, so no letter maps to 11, 22, or 33), multiply each value by 2^position (position 0-9 left to right), sum them, take sum mod 11 mod 10 — the result must equal the 11th digit. If it does not match, re-examine the handwriting for a misread character (e.g. an 'E' that is actually 'T', an 'I' that is actually 'T', '1' vs '7', '4' vs '9') and correct it until the checksum passes. Never invent characters that are not plausibly in the image.
 - Sizes are "40" or "20". A double trip means TWO 20ft containers carried together (two container numbers on one row) — set tripType "double" and put the second container number in containerNo2. Otherwise tripType is "single".
 - Location shorthand used by the driver (normalize to the canonical name):
   CT -> NSICT, GT -> NSIGT, JNBaxe -> JNB. Known locations: JWC, JWR, NSICT, NSIGT, GTI, JNPT, BMCT, JNB.
