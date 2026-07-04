@@ -41,8 +41,10 @@ export default function RootLayout({
   return (
     <html lang="en" className="bg-background">
       <body className="antialiased font-sans min-h-dvh">
-        <div className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col">
-          <div className="flex-1 pb-20 md:pb-6 md:pl-52">{children}</div>
+        <div className="flex min-h-dvh w-full flex-col">
+          <div className="flex-1 pb-20 md:pb-6 md:pl-52">
+            <div className="mx-auto w-full max-w-4xl">{children}</div>
+          </div>
           <AppNav />
         </div>
         <Toaster position="top-center" />

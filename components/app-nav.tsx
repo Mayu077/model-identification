@@ -32,8 +32,7 @@ export function AppNav() {
       {/* Desktop sidebar */}
       <nav
         aria-label="Main navigation"
-        className="fixed inset-y-0 left-1/2 z-40 hidden w-52 -translate-x-[32rem] flex-col gap-1 border-r border-border bg-sidebar p-4 md:flex lg:-translate-x-[32rem]"
-        style={{ left: "max(0px, calc(50% - 32rem))", transform: "none" }}
+        className="fixed inset-y-0 left-0 z-40 hidden w-52 flex-col gap-1 border-r border-border bg-sidebar p-4 md:flex"
       >
         <div className="mb-6 flex items-center gap-2 px-2">
           <div className="flex size-8 items-center justify-center rounded-md bg-primary font-mono text-sm font-bold text-primary-foreground">
