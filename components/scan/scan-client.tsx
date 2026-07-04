@@ -32,18 +32,55 @@ export function ScanClient() {
   const [rows, setRows] = useState<ReviewTrip[] | null>(null)
   const [result, setResult] = useState<SaveTripsResult | null>(null)
 
+  // Phone photos are often 8-15MB which exceeds the server upload limit and
+  // caused "Unexpected token" errors (server returned an HTML error page, not
+  // JSON). Resize/compress in the browser before uploading.
+  async function compressImage(file: File): Promise<Blob> {
+    const bitmap = await createImageBitmap(file)
+    const MAX_DIM = 2048
+    const scale = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement("canvas")
+    canvas.width = Math.round(bitmap.width * scale)
+    canvas.height = Math.round(bitmap.height * scale)
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return file
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.85),
+    )
+    return blob ?? file
+  }
+
   async function handleFile(file: File) {
     setResult(null)
     setRows(null)
     setPreview(URL.createObjectURL(file))
     setScanning(true)
     try {
+      let upload: Blob = file
+      try {
+        upload = await compressImage(file)
+      } catch {
+        // If compression fails (very old browser), fall back to original file
+      }
       const formData = new FormData()
-      formData.append("image", file)
+      formData.append("image", upload, "tripcard.jpg")
       const res = await fetch("/api/scan", { method: "POST", body: formData })
-      const data = await res.json()
+      let data: {
+        error?: string
+        trips?: Array<ExtractedTrip & { warnings: string[]; isDuplicate: boolean }>
+      }
+      try {
+        data = await res.json()
+      } catch {
+        throw new Error(
+          res.status === 413
+            ? "Image too large — try again, it will be compressed automatically"
+            : `Scan failed (server error ${res.status}) — please try again`,
+        )
+      }
       if (!res.ok) throw new Error(data.error || "Scan failed")
-      const trips: ReviewTrip[] = data.trips.map(
+      const trips: ReviewTrip[] = (data.trips ?? []).map(
         (t: ExtractedTrip & { warnings: string[]; isDuplicate: boolean }) => ({
           ...t,
           include: !t.isDuplicate,

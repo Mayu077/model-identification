@@ -9,9 +9,26 @@ import {
 import { withModelRotation } from "./router"
 import { z } from "zod"
 
-const TRIP_EXTRACTION_PROMPT = `You are reading a handwritten trip card from an Indian container truck driver.
+const TRIP_EXTRACTION_PROMPT = `You are reading trip documents from an Indian container truck business. The image is ONE of these two document types — identify which first:
 
-Each row on the card is one trip with: container number, size, from-location, to-location, and date. Extract EVERY visible trip row. Do NOT invent rows that are not on the card. If a value is unreadable, make your best guess from context but never fabricate a whole entry.
+DOCUMENT TYPE A — HANDWRITTEN TRIP CARD: a table where each row is one trip with container number, size, from-location, to-location, and date. Extract EVERY visible trip row. Do NOT invent rows that are not on the card. If a value is unreadable, make your best guess from context but never fabricate a whole entry.
+
+DOCUMENT TYPE B — COMPUTER-PRINTED TERMINAL RECEIPT(S): printed tickets/EIR slips from port terminals. One image may contain MULTIPLE receipts — extract one trip per receipt. The port is identified by the terminal company name printed on the receipt:
+- "GATEWAY TERMINALS INDIA" -> GTI
+- "DP World Nhava Sheva" / "Nhava Sheva ICT" -> NSICT
+- "Nhava Sheva India Gateway Terminal" -> NSIGT
+- "PSA Mumbai" / "BMCT" -> BMCT
+- "JNPCT" / "Jawaharlal Nehru" -> JNPT
+- "JNBaxe" / "JN Baxe" -> JNB
+Reading a receipt:
+- Container number is labelled "Cntr No", "Container", or "Container NO".
+- ISO Code gives the size: codes starting with "2" (22G1, 2210) = 20ft; starting with "4" (4510, 45G1) or marked 40' = 40ft.
+- Direction: "Pick-Up Ticket-Import", "Deliver Import Container", or Category "IMPORT" = IMPORT (from the terminal TO JWC/JWR). "Drop-Off Ticket-Export" or "Received Export Container" = EXPORT (FROM JWC/JWR to the terminal).
+- Company: "Group Code: JWC" or Destination/To-From "CFSJWC"/"JWC CFS" = JWC. "JWR LOG" truck company or JWR mentions = JWR.
+- Date is printed on the receipt (e.g. "01-07-2026", "02/Jul/2026", "03/07/26").
+- Each receipt is a SINGLE container trip (tripType "single") unless two 20ft receipts clearly belong to one double trip.
+
+IMAGE QUALITY: if the image is too blurry, overexposed, or unreadable to extract reliably, return an empty trips array rather than guessing entire entries.
 
 Rules:
 - Container numbers are 4 letters followed by 7 digits (e.g. DFSU7533469). Fix obvious OCR confusions (O vs 0, I vs 1, S vs 5, T vs E, T vs I) so the result matches this pattern.
