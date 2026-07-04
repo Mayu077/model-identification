@@ -1,0 +1,395 @@
+"use client"
+
+import { useRef, useState } from "react"
+import { saveTrips, type SaveTripsResult } from "@/app/actions/trips"
+import type { ExtractedTrip } from "@/lib/domain"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { toast } from "sonner"
+import { Camera, Loader2, ScanLine, Trash2, TriangleAlert, Upload } from "lucide-react"
+
+type ReviewTrip = ExtractedTrip & {
+  warnings: string[]
+  isDuplicate: boolean
+  include: boolean
+}
+
+export function ScanClient() {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [rows, setRows] = useState<ReviewTrip[] | null>(null)
+  const [result, setResult] = useState<SaveTripsResult | null>(null)
+
+  async function handleFile(file: File) {
+    setResult(null)
+    setRows(null)
+    setPreview(URL.createObjectURL(file))
+    setScanning(true)
+    try {
+      const formData = new FormData()
+      formData.append("image", file)
+      const res = await fetch("/api/scan", { method: "POST", body: formData })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Scan failed")
+      const trips: ReviewTrip[] = data.trips.map(
+        (t: ExtractedTrip & { warnings: string[]; isDuplicate: boolean }) => ({
+          ...t,
+          include: !t.isDuplicate,
+        }),
+      )
+      if (trips.length === 0) {
+        toast.warning("No trips found in this image. Try a clearer photo.")
+      }
+      setRows(trips)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Scan failed")
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  function updateRow(i: number, patch: Partial<ReviewTrip>) {
+    setRows((prev) =>
+      prev ? prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) : prev,
+    )
+  }
+
+  function removeRow(i: number) {
+    setRows((prev) => (prev ? prev.filter((_, idx) => idx !== i) : prev))
+  }
+
+  async function handleSave() {
+    if (!rows) return
+    const toSave = rows.filter((r) => r.include)
+    if (toSave.length === 0) {
+      toast.warning("No entries selected to save")
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await saveTrips(
+        toSave.map(({ warnings: _w, isDuplicate: _d, include: _i, ...t }) => t),
+      )
+      setResult(res)
+      if (res.errors.length > 0) {
+        toast.error(`${res.errors.length} entries failed — see below`)
+      } else {
+        toast.success(
+          `Saved ${res.saved} trips${res.skippedDuplicates > 0 ? `, skipped ${res.skippedDuplicates} duplicates` : ""}`,
+        )
+        setRows(null)
+        setPreview(null)
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Upload area */}
+      {!rows && (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-10">
+            {scanning ? (
+              <>
+                {preview && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={preview || "/placeholder.svg"}
+                    alt="Trip card being scanned"
+                    className="max-h-64 rounded-md border border-border object-contain"
+                  />
+                )}
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                  Reading trip card with AI…
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+                  <ScanLine className="size-7" aria-hidden />
+                </div>
+                <p className="max-w-sm text-center text-sm text-muted-foreground text-pretty">
+                  Take a photo or upload an image of the driver&apos;s trip card
+                </p>
+                <div className="flex flex-wrap justify-center gap-3">
+                  <Button onClick={() => cameraInputRef.current?.click()}>
+                    <Camera className="size-4" aria-hidden />
+                    Take Photo
+                  </Button>
+                  <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+                    <Upload className="size-4" aria-hidden />
+                    Upload Image
+                  </Button>
+                </div>
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="sr-only"
+                  aria-label="Take photo of trip card"
+                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  aria-label="Upload trip card image"
+                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+                />
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Review table */}
+      {rows && (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm text-muted-foreground">
+              {rows.length} entries found ·{" "}
+              <span className="text-foreground font-medium">
+                {rows.filter((r) => r.include).length} selected
+              </span>
+              {rows.some((r) => r.isDuplicate) && (
+                <> · {rows.filter((r) => r.isDuplicate).length} duplicates flagged</>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setRows(null)
+                  setPreview(null)
+                }}
+              >
+                Rescan
+              </Button>
+              <Button onClick={handleSave} disabled={saving}>
+                {saving && <Loader2 className="size-4 animate-spin" aria-hidden />}
+                Save {rows.filter((r) => r.include).length} Trips
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            {rows.map((row, i) => (
+              <Card
+                key={i}
+                className={row.isDuplicate ? "opacity-70 border-dashed" : undefined}
+              >
+                <CardContent className="flex flex-col gap-3 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={row.include}
+                        onChange={(e) => updateRow(i, { include: e.target.checked })}
+                        className="size-4 accent-primary"
+                        aria-label={`Include trip ${row.containerNo}`}
+                      />
+                      <span className="font-mono text-sm font-medium">
+                        {row.containerNo}
+                      </span>
+                      {row.isDuplicate && (
+                        <Badge variant="secondary">Already saved</Badge>
+                      )}
+                      <Badge variant="outline">
+                        {row.company} {row.direction === "EXPORT" ? "EXP" : "IMP"}
+                      </Badge>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => removeRow(i)}
+                      aria-label={`Remove trip ${row.containerNo}`}
+                    >
+                      <Trash2 className="size-4" aria-hidden />
+                    </Button>
+                  </div>
+
+                  {row.warnings.length > 0 && (
+                    <div className="flex items-start gap-2 rounded-md bg-accent/10 px-3 py-2 text-xs text-accent-foreground">
+                      <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-accent" aria-hidden />
+                      <ul className="flex flex-col gap-0.5">
+                        {row.warnings.map((w, wi) => (
+                          <li key={wi}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`date-${i}`}>
+                        Date
+                      </label>
+                      <Input
+                        id={`date-${i}`}
+                        type="date"
+                        value={row.tripDate}
+                        onChange={(e) => updateRow(i, { tripDate: e.target.value })}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`cn-${i}`}>
+                        Container No
+                      </label>
+                      <Input
+                        id={`cn-${i}`}
+                        value={row.containerNo}
+                        className="font-mono"
+                        onChange={(e) =>
+                          updateRow(i, { containerNo: e.target.value.toUpperCase() })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`size-${i}`}>
+                        Size
+                      </label>
+                      <Select
+                        value={`${row.size}_${row.tripType}`}
+                        onValueChange={(v) => {
+                          if (!v) return
+                          const [size, tripType] = v.split("_") as [
+                            "40" | "20",
+                            "single" | "double",
+                          ]
+                          updateRow(i, {
+                            size,
+                            tripType,
+                            containerNo2: tripType === "double" ? row.containerNo2 : null,
+                          })
+                        }}
+                      >
+                        <SelectTrigger id={`size-${i}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="40_single">40 ft</SelectItem>
+                          <SelectItem value="20_single">20 ft single</SelectItem>
+                          <SelectItem value="20_double">20 ft double</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {row.tripType === "double" && (
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-muted-foreground" htmlFor={`cn2-${i}`}>
+                          2nd Container
+                        </label>
+                        <Input
+                          id={`cn2-${i}`}
+                          value={row.containerNo2 ?? ""}
+                          className="font-mono"
+                          onChange={(e) =>
+                            updateRow(i, { containerNo2: e.target.value.toUpperCase() })
+                          }
+                        />
+                      </div>
+                    )}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`from-${i}`}>
+                        From
+                      </label>
+                      <Input
+                        id={`from-${i}`}
+                        value={row.fromLocation}
+                        onChange={(e) =>
+                          updateRow(i, { fromLocation: e.target.value.toUpperCase() })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`to-${i}`}>
+                        To
+                      </label>
+                      <Input
+                        id={`to-${i}`}
+                        value={row.toLocation}
+                        onChange={(e) =>
+                          updateRow(i, { toLocation: e.target.value.toUpperCase() })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`co-${i}`}>
+                        Company
+                      </label>
+                      <Select
+                        value={row.company}
+                        onValueChange={(v) => updateRow(i, { company: v as "JWC" | "JWR" })}
+                      >
+                        <SelectTrigger id={`co-${i}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="JWC">JWC</SelectItem>
+                          <SelectItem value="JWR">JWR</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-muted-foreground" htmlFor={`dir-${i}`}>
+                        Direction
+                      </label>
+                      <Select
+                        value={row.direction}
+                        onValueChange={(v) =>
+                          updateRow(i, { direction: v as "EXPORT" | "IMPORT" })
+                        }
+                      >
+                        <SelectTrigger id={`dir-${i}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="EXPORT">Export</SelectItem>
+                          <SelectItem value="IMPORT">Import</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Save result with errors */}
+      {result && result.errors.length > 0 && (
+        <Card className="border-destructive/50">
+          <CardContent className="py-4">
+            <p className="mb-2 text-sm font-medium text-destructive">
+              {result.errors.length} entries could not be saved:
+            </p>
+            <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+              {result.errors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
