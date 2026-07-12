@@ -5,25 +5,29 @@ import { Badge } from "@/components/ui/badge"
 import { db } from "@/lib/db"
 import { expenses, trips } from "@/lib/db/schema"
 import { formatDateDDMMYYYY, formatINR } from "@/lib/domain"
-import { desc, sql } from "drizzle-orm"
+import { desc, eq, sql } from "drizzle-orm"
+import { requireOwner } from "@/lib/tenant"
 
 export const dynamic = "force-dynamic"
 
 export default async function DashboardPage() {
+  const tenant = await requireOwner()
   const [tripTotals, expenseTotals, recentTrips] = await Promise.all([
     db
       .select({
         income: sql<number>`coalesce(sum(${trips.rate}), 0)::int`,
         count: sql<number>`count(*)::int`,
       })
-      .from(trips),
+      .from(trips)
+      .where(eq(trips.organizationId, tenant.organizationId)),
     db
       .select({
         spent: sql<number>`coalesce(sum(${expenses.amount}), 0)::int`,
         count: sql<number>`count(*)::int`,
       })
-      .from(expenses),
-    db.select().from(trips).orderBy(desc(trips.tripDate), desc(trips.id)).limit(5),
+      .from(expenses)
+      .where(eq(expenses.organizationId, tenant.organizationId)),
+    db.select().from(trips).where(eq(trips.organizationId, tenant.organizationId)).orderBy(desc(trips.tripDate), desc(trips.id)).limit(5),
   ])
 
   const income = tripTotals[0]?.income ?? 0

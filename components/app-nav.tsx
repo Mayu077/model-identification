@@ -10,7 +10,10 @@ import {
   ListOrdered,
   Settings,
   Wallet,
+  LogOut,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { authClient } from "@/lib/auth-client"
 import { cn } from "@/lib/utils"
 
 const NAV_ITEMS = [
@@ -26,6 +29,12 @@ const NAV_ITEMS = [
 // Mobile: bottom tab bar (first 5 + settings via home). Desktop: left sidebar.
 export function AppNav() {
   const pathname = usePathname()
+  const router = useRouter()
+  async function signOut() {
+    await authClient.signOut()
+    router.push("/sign-in")
+    router.refresh()
+  }
 
   return (
     <>
@@ -60,6 +69,10 @@ export function AppNav() {
             {label}
           </Link>
         ))}
+        <button onClick={signOut} className="mt-auto flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground">
+          <LogOut className="size-4" aria-hidden="true" />
+          Sign out
+        </button>
       </nav>
 
       {/* Mobile bottom bar */}

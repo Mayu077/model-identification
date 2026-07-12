@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Toaster } from '@/components/ui/sonner'
 import { AppNav } from '@/components/app-nav'
+import { getSessionUser } from '@/lib/tenant'
 import './theme.css'
 
 const _geistSans = Geist({ subsets: ['latin'] })
@@ -33,19 +34,20 @@ export const viewport: Viewport = {
   maximumScale: 1,
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const user = await getSessionUser()
   return (
     <html lang="en" className="bg-background">
       <body className="antialiased font-sans min-h-dvh">
         <div className="flex min-h-dvh w-full flex-col">
-          <div className="flex-1 pb-20 md:pb-6 md:pl-52">
+          <div className={user ? "flex-1 pb-20 md:pb-6 md:pl-52" : "flex-1"}>
             <div className="mx-auto w-full max-w-4xl">{children}</div>
           </div>
-          <AppNav />
+          {user && <AppNav />}
         </div>
         <Toaster position="top-center" />
         {process.env.NODE_ENV === 'production' && <Analytics />}
