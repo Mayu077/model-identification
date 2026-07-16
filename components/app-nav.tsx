@@ -26,6 +26,7 @@ const NAV_ITEMS = [
 // Mobile: bottom tab bar (first 5 + settings via home). Desktop: left sidebar.
 export function AppNav() {
   const pathname = usePathname()
+  if (pathname.startsWith("/sign-") || pathname.startsWith("/onboarding")) return null
 
   return (
     <>
