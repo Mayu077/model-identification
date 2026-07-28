@@ -65,18 +65,45 @@ one is actually current.
 ### If a database is already on the new schema
 
 Do not re-run the migration and do not drop anything. The schema exists but was
-never recorded in a ledger, so `pnpm db:migrate` will try to create tables that
-already exist. Reconcile instead:
+never recorded in a ledger, so `pnpm db:migrate` would try to create tables that
+already exist and fail on the first `CREATE TABLE`. Reconcile instead:
 
 ```bash
-# Does the live schema actually match lib/db/schema.ts?
-pnpm exec drizzle-kit check
-pnpm exec drizzle-kit introspect   # writes the live schema out for diffing
+# Write the live schema out and diff it against migrations/0000_*.sql by hand.
+pnpm exec drizzle-kit pull
+
+# Record 0000 as applied WITHOUT executing its SQL, so later migrations stack.
+pnpm db:baseline
 ```
 
-If they match, mark the baseline as already applied rather than executing it, so
-future migrations stack cleanly on top. If they have drifted, generate a
-corrective migration for the difference only.
+`scripts/baseline-ledger.mjs` inserts the migration's hash and journal timestamp
+into `drizzle.__drizzle_migrations`, creating the schema and table exactly as
+drizzle's own migrator would. It is idempotent and never runs migration SQL.
+After baselining, `pnpm db:migrate` applies only `0001` onward.
+
+If the live schema has drifted from `lib/db/schema.ts`, fix `schema.ts` to match
+live *first* and regenerate `0000`, then baseline. Generating a "corrective"
+migration in the other direction would run DDL against production for objects
+that are already correct.
+
+### This already ran on the current database (2026-07-29)
+
+Neon project `nameless-shadow-39962436`, host `ep-restless-term-av5wy3wo`. It
+reported `generation NEW` with 45 trips / 12 rates / 1 expense / 11 settings, so:
+
+- `lib/db/schema.ts` was rewritten to match live exactly, including the five
+  `CHECK` constraints, the composite `settings_pkey`, and the two
+  `UNIQUE(id, organization_id)` constraints that were missing from it. Constraint
+  names are pinned to live so drizzle-kit does not emit a drop/recreate.
+- `0000_baseline_live_schema` was **baselined, not executed** — verified
+  byte-equal to a fresh `drizzle-kit pull` in both directions first.
+- `0001_trips_dedup_constraint` was **applied**, adding the
+  `UNIQUE(organization_id, trip_date, container_no)` that live was missing. Until
+  then `addTrips`'s `onConflictDoNothing()` had nothing to conflict on, so
+  re-scanning a card silently inserted a duplicate. There were 0 duplicates at
+  the time, so the constraint was added without a cleanup step.
+
+You should not need this document again for that database.
 
 ---
 

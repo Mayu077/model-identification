@@ -15,7 +15,7 @@ CREATE TABLE "account" (
 );
 --> statement-breakpoint
 CREATE TABLE "audit_logs" (
-	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "audit_logs_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"id" bigserial PRIMARY KEY NOT NULL,
 	"organization_id" text NOT NULL,
 	"actor_user_id" text,
 	"action" text NOT NULL,
@@ -43,7 +43,9 @@ CREATE TABLE "expenses" (
 	"amount" integer NOT NULL,
 	"description" text DEFAULT '' NOT NULL,
 	"source" text DEFAULT 'manual' NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "expenses_organization_id_id_key" UNIQUE("id","organization_id"),
+	CONSTRAINT "expenses_amount_check" CHECK (amount >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE "memberships" (
@@ -52,8 +54,9 @@ CREATE TABLE "memberships" (
 	"user_id" text NOT NULL,
 	"role" text DEFAULT 'owner' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "memberships_organization_id_user_id_unique" UNIQUE("organization_id","user_id"),
-	CONSTRAINT "memberships_user_id_unique" UNIQUE("user_id")
+	CONSTRAINT "memberships_organization_id_user_id_key" UNIQUE("organization_id","user_id"),
+	CONSTRAINT "memberships_user_id_key" UNIQUE("user_id"),
+	CONSTRAINT "memberships_role_check" CHECK (role = 'owner'::text)
 );
 --> statement-breakpoint
 CREATE TABLE "organizations" (
@@ -64,7 +67,7 @@ CREATE TABLE "organizations" (
 	"is_legacy" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "organizations_slug_unique" UNIQUE("slug")
+	CONSTRAINT "organizations_slug_key" UNIQUE("slug")
 );
 --> statement-breakpoint
 CREATE TABLE "owner_invites" (
@@ -77,7 +80,7 @@ CREATE TABLE "owner_invites" (
 	"consumed_by_user_id" text,
 	"revoked_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "owner_invites_token_hash_unique" UNIQUE("token_hash")
+	CONSTRAINT "owner_invites_token_hash_key" UNIQUE("token_hash")
 );
 --> statement-breakpoint
 CREATE TABLE "rates" (
@@ -87,7 +90,8 @@ CREATE TABLE "rates" (
 	"direction" text NOT NULL,
 	"trip_kind" text NOT NULL,
 	"rate" integer NOT NULL,
-	CONSTRAINT "rates_organization_id_company_direction_trip_kind_unique" UNIQUE("organization_id","company","direction","trip_kind")
+	CONSTRAINT "rates_organization_id_company_direction_trip_kind_key" UNIQUE("organization_id","company","direction","trip_kind"),
+	CONSTRAINT "rates_rate_check" CHECK (rate >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE "scan_jobs" (
@@ -105,7 +109,8 @@ CREATE TABLE "scan_jobs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"completed_at" timestamp with time zone,
-	CONSTRAINT "scan_jobs_organization_id_idempotency_key_unique" UNIQUE("organization_id","idempotency_key")
+	CONSTRAINT "scan_jobs_organization_id_idempotency_key_key" UNIQUE("organization_id","idempotency_key"),
+	CONSTRAINT "scan_jobs_status_check" CHECK (status = ANY (ARRAY['queued'::text, 'processing'::text, 'succeeded'::text, 'failed'::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "schema_migrations" (
@@ -123,14 +128,14 @@ CREATE TABLE "session" (
 	"ipAddress" text,
 	"userAgent" text,
 	"userId" text NOT NULL,
-	CONSTRAINT "session_token_unique" UNIQUE("token")
+	CONSTRAINT "session_token_key" UNIQUE("token")
 );
 --> statement-breakpoint
 CREATE TABLE "settings" (
 	"organization_id" text NOT NULL,
 	"key" text NOT NULL,
 	"value" text NOT NULL,
-	CONSTRAINT "settings_organization_id_key_unique" UNIQUE("organization_id","key")
+	CONSTRAINT "settings_pkey" PRIMARY KEY("organization_id","key")
 );
 --> statement-breakpoint
 CREATE TABLE "trips" (
@@ -149,7 +154,8 @@ CREATE TABLE "trips" (
 	"notes" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "trips_organization_id_trip_date_container_no_unique" UNIQUE("organization_id","trip_date","container_no")
+	CONSTRAINT "trips_organization_id_id_key" UNIQUE("id","organization_id"),
+	CONSTRAINT "trips_rate_check" CHECK (rate >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE "user" (
@@ -160,7 +166,7 @@ CREATE TABLE "user" (
 	"image" text,
 	"createdAt" timestamp with time zone DEFAULT now() NOT NULL,
 	"updatedAt" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "user_email_unique" UNIQUE("email")
+	CONSTRAINT "user_email_key" UNIQUE("email")
 );
 --> statement-breakpoint
 CREATE TABLE "verification" (

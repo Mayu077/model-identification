@@ -5,8 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1785268818659,
-      "tag": "0000_tiresome_mercury",
+      "when": 1785270794240,
+      "tag": "0000_baseline_live_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785270912766,
+      "tag": "0001_trips_dedup_constraint",
       "breakpoints": true
     }
   ]

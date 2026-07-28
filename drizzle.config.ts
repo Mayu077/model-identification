@@ -4,7 +4,9 @@ export default defineConfig({
   schema: "./lib/db/schema.ts",
   out: "./migrations",
   dialect: "postgresql",
-  dbCredentials: { url: process.env.DATABASE_URL! },
+  // Neon's pooler (PgBouncer) does not support the session-level operations
+  // drizzle-kit needs for DDL and introspection, so prefer the direct endpoint.
+  dbCredentials: { url: (process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL)! },
   strict: true,
   verbose: true,
 })

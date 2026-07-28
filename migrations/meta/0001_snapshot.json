@@ -1,6 +1,6 @@
 {
-  "id": "37067865-3e21-4931-a3d8-96a265d24891",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "a9e4534c-4796-4d60-a351-304689308ab3",
+  "prevId": "37067865-3e21-4931-a3d8-96a265d24891",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1127,6 +1127,15 @@
           "columns": [
             "id",
             "organization_id"
+          ]
+        },
+        "trips_unique_entry": {
+          "name": "trips_unique_entry",
+          "nullsNotDistinct": false,
+          "columns": [
+            "organization_id",
+            "trip_date",
+            "container_no"
           ]
         }
       },
