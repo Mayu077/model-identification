@@ -7,9 +7,12 @@ __v0_jsx-dev-runtime.ts
 .vercel/
 
 # Environment variables
-.env*.local
+# .env* rather than .env*.local: `vercel env pull` and `vercel link` write real
+# secrets into .env.local, and .vercel/ holds the project link.
+.env*
 
 # Common ignores
 node_modules
 .next/
 .DS_Store
+tsconfig.tsbuildinfo

@@ -1,0 +1,5 @@
+# Keep migration SQL byte-identical across platforms. Drizzle records a sha256
+# of each .sql file's raw bytes in its ledger, so a CRLF checkout would record a
+# different hash for the same migration than an LF one.
+*.sql text eol=lf
+migrations/meta/*.json text eol=lf

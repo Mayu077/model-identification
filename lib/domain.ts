@@ -122,6 +122,13 @@ export const extractionResultSchema = z.object({
   trips: z.array(extractedTripSchema),
 })
 
+// The trips_unique_entry constraint is on (organization_id, trip_date,
+// container_no), so every write path must normalize container numbers the same
+// way or "abcd1234567" and "ABCD 1234567" become two rows for one container.
+export function normalizeContainerNo(containerNo: string): string {
+  return containerNo.toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
 // Sanitize + validate a raw AI-extracted row. Returns warnings instead of
 // silently accepting bad data.
 export function sanitizeExtractedTrip(t: ExtractedTrip): {
@@ -129,10 +136,8 @@ export function sanitizeExtractedTrip(t: ExtractedTrip): {
   warnings: string[]
 } {
   const warnings: string[] = []
-  const containerNo = t.containerNo.toUpperCase().replace(/[^A-Z0-9]/g, "")
-  const containerNo2 = t.containerNo2
-    ? t.containerNo2.toUpperCase().replace(/[^A-Z0-9]/g, "")
-    : null
+  const containerNo = normalizeContainerNo(t.containerNo)
+  const containerNo2 = t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null
 
   const w1 = containerWarning(containerNo)
   if (w1) warnings.push(w1)

@@ -2,7 +2,8 @@
 
 import { db } from "@/lib/db"
 import { expenses, trips } from "@/lib/db/schema"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
+import { requireTenant } from "@/lib/tenant"
 import { generateBusinessInsights } from "@/lib/ai/extract"
 
 export interface MonthlyStat {
@@ -19,6 +20,7 @@ export interface AnalyticsData {
 }
 
 export async function getAnalytics(): Promise<AnalyticsData> {
+  const tenant = await requireTenant()
   const [incomeRows, expenseRows, expCat, tripCat, totals] = await Promise.all([
     db
       .select({
@@ -26,6 +28,7 @@ export async function getAnalytics(): Promise<AnalyticsData> {
         income: sql<number>`coalesce(sum(${trips.rate}), 0)::int`,
       })
       .from(trips)
+      .where(eq(trips.organizationId, tenant.organizationId))
       .groupBy(sql`to_char(${trips.tripDate}, 'YYYY-MM')`),
     db
       .select({
@@ -33,6 +36,7 @@ export async function getAnalytics(): Promise<AnalyticsData> {
         expense: sql<number>`coalesce(sum(${expenses.amount}), 0)::int`,
       })
       .from(expenses)
+      .where(eq(expenses.organizationId, tenant.organizationId))
       .groupBy(sql`to_char(${expenses.expenseDate}, 'YYYY-MM')`),
     db
       .select({
@@ -40,6 +44,7 @@ export async function getAnalytics(): Promise<AnalyticsData> {
         amount: sql<number>`coalesce(sum(${expenses.amount}), 0)::int`,
       })
       .from(expenses)
+      .where(eq(expenses.organizationId, tenant.organizationId))
       .groupBy(expenses.category),
     db
       .select({
@@ -48,10 +53,13 @@ export async function getAnalytics(): Promise<AnalyticsData> {
         amount: sql<number>`coalesce(sum(${trips.rate}), 0)::int`,
       })
       .from(trips)
+      .where(eq(trips.organizationId, tenant.organizationId))
       .groupBy(trips.company, trips.direction),
     Promise.all([
-      db.select({ v: sql<number>`coalesce(sum(${trips.rate}), 0)::int`, c: sql<number>`count(*)::int` }).from(trips),
-      db.select({ v: sql<number>`coalesce(sum(${expenses.amount}), 0)::int` }).from(expenses),
+      db.select({ v: sql<number>`coalesce(sum(${trips.rate}), 0)::int`, c: sql<number>`count(*)::int` }).from(trips)
+      .where(eq(trips.organizationId, tenant.organizationId)),
+      db.select({ v: sql<number>`coalesce(sum(${expenses.amount}), 0)::int` }).from(expenses)
+      .where(eq(expenses.organizationId, tenant.organizationId)),
     ]),
   ])
 

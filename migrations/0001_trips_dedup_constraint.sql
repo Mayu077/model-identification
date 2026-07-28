@@ -1,0 +1,1 @@
+ALTER TABLE "trips" ADD CONSTRAINT "trips_unique_entry" UNIQUE("organization_id","trip_date","container_no");

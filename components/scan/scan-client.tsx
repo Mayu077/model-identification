@@ -80,6 +80,18 @@ export function ScanClient() {
         )
       }
       if (!res.ok) throw new Error(data.error || "Scan failed")
+      const queued = data as typeof data & { jobId?: string; status?: string }
+      if (!queued.jobId) throw new Error("Scan job was not created")
+      let job: { status: string; result?: { trips?: Array<ExtractedTrip & { warnings: string[]; isDuplicate: boolean }> }; errorMessage?: string } = { status: queued.status ?? "queued" }
+      for (let attempt = 0; attempt < 90 && ["queued", "processing"].includes(job.status); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        const statusResponse = await fetch(`/api/scan?id=${encodeURIComponent(queued.jobId)}`, { cache: "no-store" })
+        job = await statusResponse.json()
+        if (!statusResponse.ok) throw new Error(job.errorMessage || "Could not check scan status")
+      }
+      if (job.status === "failed") throw new Error(job.errorMessage || "Scan extraction failed")
+      if (job.status !== "succeeded") throw new Error("Scan is taking longer than expected. You can safely retry.")
+      data.trips = job.result?.trips ?? []
       const trips: ReviewTrip[] = (data.trips ?? []).map(
         (t: ExtractedTrip & { warnings: string[]; isDuplicate: boolean }) => ({
           ...t,
