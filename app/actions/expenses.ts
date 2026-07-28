@@ -27,7 +27,7 @@ export async function addExpense(input: z.infer<typeof expenseInputSchema>) {
       expenseDate: e.expenseDate,
       category: e.category,
       amount: e.amount,
-      description: e.description ?? null,
+      description: e.description ?? "",
       source: e.source,
     })
     .returning()
@@ -66,7 +66,7 @@ export async function updateExpense(
       expenseDate: e.expenseDate,
       category: e.category,
       amount: e.amount,
-      description: e.description ?? null,
+      description: e.description ?? "",
     })
     .where(and(eq(expenses.id, id), eq(expenses.organizationId, tenant.organizationId)))
   revalidatePath("/expenses")

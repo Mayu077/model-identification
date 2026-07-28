@@ -63,6 +63,12 @@ export const scanJobs = pgTable("scan_jobs", {
   status: text("status").notNull(), input: jsonb("input").notNull().default({}), result: jsonb("result"), errorCode: text("error_code"), errorMessage: text("error_message"), attemptCount: integer("attempt_count").notNull().default(0),
   idempotencyKey: text("idempotency_key").notNull(), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(), completedAt: timestamp("completed_at", { withTimezone: true }),
 }, (t) => [unique().on(t.organizationId, t.idempotencyKey)])
+// Bookkeeping for hand-written data migrations (e.g. scripts/import-legacy.mjs),
+// separate from drizzle-kit's own __drizzle_migrations ledger.
+export const schemaMigrations = pgTable("schema_migrations", {
+  name: text("name").primaryKey(), checksum: text("checksum").notNull(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+})
 export type Trip = typeof trips.$inferSelect
 export type NewTrip = typeof trips.$inferInsert
 export type Rate = typeof rates.$inferSelect

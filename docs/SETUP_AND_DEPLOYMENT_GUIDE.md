@@ -87,15 +87,30 @@ GEMINI_API_KEY_1=your_gemini_key_here
 The Drizzle ORM schema is in `lib/db/schema.ts`. To create tables:
 
 ```bash
-pnpm exec drizzle-kit migrate
+pnpm db:migrate
 ```
 
-This creates all tables (trips, expenses, drivers, settings, audit_log, etc.) in your Neon database.
+This applies everything in `migrations/` and creates all 15 tables (`user`,
+`session`, `account`, `verification`, `organizations`, `memberships`,
+`owner_invites`, `trips`, `expenses`, `rates`, `settings`, `drivers`,
+`audit_logs`, `scan_jobs`, `schema_migrations`) in your Neon database.
+
+> **Upgrading an existing database?** If your database predates
+> authentication — i.e. it has `trips`/`expenses`/`rates`/`settings` with no
+> `organization_id` column — `pnpm db:migrate` will fail with
+> `relation "trips" already exists`. Follow **[MULTITENANT_CUTOVER.md](MULTITENANT_CUTOVER.md)**
+> instead of this step.
+
+After changing `lib/db/schema.ts`, regenerate the SQL with:
+
+```bash
+pnpm db:generate
+```
 
 ### Step 4: Verify
 
 ```bash
-pnpm exec drizzle-kit studio
+pnpm db:studio
 ```
 
 This opens a web UI showing your database tables. If you see `trips`, `expenses`, `drivers`, you're good.

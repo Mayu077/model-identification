@@ -1,0 +1,11 @@
+# pnpm 11 moved these settings out of package.json's "pnpm" field.
+
+# Dependencies allowed to run install scripts. Everything else is blocked.
+allowBuilds:
+  esbuild: true # required by drizzle-kit
+  sharp: true # required by next/image optimization
+  msw: false # test-only request mocking; no build step needed here
+
+# Carried over from the now-ignored "pnpm.overrides" field in package.json.
+overrides:
+  hono: 4.12.25
