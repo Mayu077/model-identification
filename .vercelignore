@@ -1,0 +1,12 @@
+# Applies to `vercel deploy` from a workstation, which uploads the working
+# directory rather than pulling from Git. Without this, .env.local (real Neon
+# credentials, written by `vercel env pull`) would be uploaded, and Next.js
+# loads .env.local in production builds — overriding the project's own vars.
+.env*
+.vercel
+node_modules
+.next
+.introspect
+.v0-trash
+.snowflake
+tsconfig.tsbuildinfo
