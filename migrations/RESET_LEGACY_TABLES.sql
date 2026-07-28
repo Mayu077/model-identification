@@ -2,6 +2,21 @@
 -- DESTRUCTIVE: drops the pre-multitenant tables. Data in them is LOST.
 -- ============================================================================
 --
+-- DO NOT RUN THIS until you have confirmed which database you are pointed at:
+--
+--     DATABASE_URL="postgresql://..." node scripts/db-fingerprint.mjs
+--
+-- This project was built across multiple v0 accounts, each with its own Neon
+-- database, and at least one of them is already on the new schema with legacy
+-- data imported (~45 trips). Running this against that database destroys it.
+-- Only proceed if the fingerprint reported:
+--
+--     generation OLD (pre-auth, no organization_id)
+--
+-- See docs/MULTITENANT_CUTOVER.md.
+--
+-- ----------------------------------------------------------------------------
+--
 -- Run this ONLY if you have accepted losing the contents of these four tables,
 -- or have already exported them to CSV for scripts/import-legacy.mjs.
 --

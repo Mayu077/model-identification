@@ -35,7 +35,54 @@ If you later need the old rows, the intended route is
 `scripts/import-legacy.mjs`, which loads CSVs from `.v0/imports/` into a
 dedicated organization flagged `is_legacy = true`.
 
-## Procedure
+## STOP: check whether the cutover already ran
+
+This project was built across **multiple v0 accounts, each with its own Neon
+database**, and v0 applied schema changes *directly to those databases* without
+committing migration files. So at least one database is likely already on the
+new schema with legacy data imported — one work log reports **45 trips, 12
+rates, 1 expense, 11 settings**.
+
+Running `RESET_LEGACY_TABLES.sql` against that database would destroy real data.
+
+Identify every database before touching any of them:
+
+```bash
+DATABASE_URL="postgresql://..." node scripts/db-fingerprint.mjs
+```
+
+It is read-only and prints no password. Read the `generation` line:
+
+| `generation` | Meaning | What to do |
+|---|---|---|
+| `NEW (multi-tenant, post-cutover)` | Already migrated. May hold the 45 imported trips. | **Do not run the reset.** Baseline instead — see below. |
+| `OLD (pre-auth, no organization_id)` | Never migrated. | The procedure below applies. |
+| `EMPTY` | No tables. | Just run `pnpm db:migrate`. |
+
+Use the highest `newest trip created_at` across all databases to decide which
+one is actually current.
+
+### If a database is already on the new schema
+
+Do not re-run the migration and do not drop anything. The schema exists but was
+never recorded in a ledger, so `pnpm db:migrate` will try to create tables that
+already exist. Reconcile instead:
+
+```bash
+# Does the live schema actually match lib/db/schema.ts?
+pnpm exec drizzle-kit check
+pnpm exec drizzle-kit introspect   # writes the live schema out for diffing
+```
+
+If they match, mark the baseline as already applied rather than executing it, so
+future migrations stack cleanly on top. If they have drifted, generate a
+corrective migration for the difference only.
+
+---
+
+## Procedure for a pre-auth database
+
+Everything below assumes `generation` reported `OLD`.
 
 ### 1. Back up — not optional
 
