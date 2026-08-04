@@ -66,6 +66,11 @@ export function ScanClient() {
       const formData = new FormData()
       formData.append("image", upload, "tripcard.jpg")
       const res = await fetch("/api/scan", { method: "POST", body: formData })
+      // Catch an expired session before trying to parse the body: a redirect to
+      // the HTML sign-in page arrives here as a followed 200, which is not JSON.
+      if (res.redirected || res.status === 401 || res.status === 403) {
+        throw new Error("Your session expired — please sign in again, then retry this upload.")
+      }
       let data: {
         error?: string
         trips?: Array<ExtractedTrip & { warnings: string[]; isDuplicate: boolean }>
@@ -89,7 +94,12 @@ export function ScanClient() {
       for (let attempt = 0; attempt < 160 && ["queued", "processing"].includes(job.status); attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 2000))
         const statusResponse = await fetch(`/api/scan?id=${encodeURIComponent(queued.jobId)}`, { cache: "no-store" })
-        job = await statusResponse.json()
+        if (statusResponse.redirected || [401, 403].includes(statusResponse.status)) {
+          throw new Error("Your session expired while the card was being read — sign in again and the result will still be here.")
+        }
+        job = await statusResponse.json().catch(() => {
+          throw new Error("Could not check scan status — please retry.")
+        })
         if (!statusResponse.ok) throw new Error(job.errorMessage || "Could not check scan status")
       }
       if (job.status === "failed") throw new Error(job.errorMessage || "Scan extraction failed")

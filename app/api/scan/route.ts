@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm"
 import { createHash, randomUUID } from "node:crypto"
 import { db } from "@/lib/db"
 import { scanJobs, trips } from "@/lib/db/schema"
-import { requireTenant } from "@/lib/tenant"
+import { requireTenantApi } from "@/lib/tenant"
 import { extractTripsFromImage } from "@/lib/ai/extract"
 import { writeAudit } from "@/lib/audit"
 
@@ -13,6 +13,28 @@ import { writeAudit } from "@/lib/audit"
 // router's TOTAL_BUDGET_MS (240s) so a failure is recorded on the job row
 // rather than the function vanishing.
 export const maxDuration = 300
+
+// This route used requireTenant(), which calls redirect("/sign-in"). In a route
+// handler that becomes a 307, and the browser's fetch() follows it to the HTML
+// sign-in page, so the client received status 200 with HTML and failed to parse
+// it — surfacing as the baffling "Scan failed (server error 200)". An API route
+// must always answer with JSON, so use the throwing variant and map it here.
+async function resolveTenant(): Promise<
+  | { tenant: Awaited<ReturnType<typeof requireTenantApi>>; response?: undefined }
+  | { tenant?: undefined; response: Response }
+> {
+  try {
+    return { tenant: await requireTenantApi() }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unauthorized"
+    return {
+      response: Response.json(
+        { error: message === "Unauthorized" ? "Your session expired — please sign in again." : message },
+        { status: message === "Unauthorized" ? 401 : 403 },
+      ),
+    }
+  }
+}
 
 async function processJob(id: string, organizationId: string, dataUrl: string) {
   try {
@@ -29,7 +51,8 @@ async function processJob(id: string, organizationId: string, dataUrl: string) {
 }
 
 export async function POST(req: Request) {
-  const tenant = await requireTenant()
+  const { tenant, response } = await resolveTenant()
+  if (!tenant) return response
   const formData = await req.formData()
   const file = formData.get("image")
   if (!(file instanceof File)) return Response.json({ error: "No image provided" }, { status: 400 })
@@ -63,7 +86,8 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
-  const tenant = await requireTenant()
+  const { tenant, response } = await resolveTenant()
+  if (!tenant) return response
   const id = new URL(req.url).searchParams.get("id")
   if (!id) return Response.json({ error: "Job id required" }, { status: 400 })
   const [job] = await db.select({ id: scanJobs.id, status: scanJobs.status, result: scanJobs.result, errorMessage: scanJobs.errorMessage }).from(scanJobs).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, tenant.organizationId))).limit(1)
