@@ -1,7 +1,7 @@
 import { generateText, Output } from "ai"
 import {
   extractedExpenseSchema,
-  extractionResultSchema,
+  extractedTripSchema,
   sanitizeExtractedTrip,
   type ExtractedExpense,
   type ExtractedTrip,
@@ -11,7 +11,9 @@ import { z } from "zod"
 
 const TRIP_EXTRACTION_PROMPT = `You are reading trip documents from an Indian container truck business. The image is ONE of these two document types — identify which first:
 
-DOCUMENT TYPE A — HANDWRITTEN TRIP CARD: a table where each row is one trip with container number, size, from-location, to-location, and date. Extract EVERY visible trip row. Do NOT invent rows that are not on the card. If a value is unreadable, make your best guess from context but never fabricate a whole entry.
+DOCUMENT TYPE A — HANDWRITTEN TRIP CARD: a printed grid (columns Date, Container No., Size, Type, From, To, Diesel, Slip No., Pump, Remark) filled in by hand, one trip per row. A full card commonly holds 25-45 rows. Extract EVERY visible trip row — never stop early, never summarise, never say "and so on". Do NOT invent rows that are not on the card. If a value is unreadable, make your best guess from context but never fabricate a whole entry.
+
+CONTINUATION LINES ON A HANDWRITTEN CARD (important): some lines hold ONLY a container number and a size, with no date and no From/To, often marked with an arrow or hook (-> or the like). Such a line is NOT its own trip — it is the SECOND 20ft container of the trip on the line directly above it. Merge it into that row: set that row's tripType to "double" and put this container number in containerNo2. Never emit a trip whose From/To or date is blank.
 
 DOCUMENT TYPE B — COMPUTER-PRINTED TERMINAL RECEIPT(S): printed tickets/EIR slips from port terminals. One image may contain MULTIPLE receipts — extract one trip per receipt.
 
@@ -36,7 +38,7 @@ IMAGE QUALITY: if the image is too blurry, overexposed, or unreadable to extract
 
 Rules:
 - Container numbers are 4 letters followed by 7 digits (e.g. DFSU7533469). Fix obvious OCR confusions (O vs 0, I vs 1, S vs 5, T vs E, T vs I) so the result matches this pattern.
-- ISO 6346 CHECK DIGIT VERIFICATION (MANDATORY): the 11th character of every container number is a mathematical check digit. Before outputting a container number, verify it: convert each of the first 10 characters to a value (digits = face value; letters A=10, B=12, C=13 ... skipping multiples of 11, so no letter maps to 11, 22, or 33), multiply each value by 2^position (position 0-9 left to right), sum them, take sum mod 11 mod 10 — the result must equal the 11th digit. If it does not match, re-examine the handwriting for a misread character (e.g. an 'E' that is actually 'T', an 'I' that is actually 'T', '1' vs '7', '4' vs '9') and correct it until the checksum passes. Never invent characters that are not plausibly in the image.
+- Do NOT compute or verify the ISO 6346 check digit. The application re-checks every container number in code the moment you finish and flags mismatches for human review, so doing that arithmetic yourself is wasted work — on a 40-row card it is slow enough to time the request out. Simply transcribe each container number character by character from the image, correcting only clear handwriting confusions (O vs 0, I vs 1, S vs 5, T vs E, T vs I, 1 vs 7, 4 vs 9). Never invent characters that are not plausibly in the image.
 - Sizes are "40" or "20". A double trip means TWO 20ft containers carried together (two container numbers on one row) — set tripType "double" and put the second container number in containerNo2. Otherwise tripType is "single".
 - Location shorthand used by the driver (normalize to the canonical name):
   CT -> NSICT, GT -> NSIGT, JNBaxe -> JNB. Known locations: JWC, JWR, NSICT, NSIGT, GTI, JNPT, BMCT, JNB.
@@ -47,7 +49,29 @@ Rules:
 
 export interface TripExtractionResult {
   trips: Array<ExtractedTrip & { warnings: string[] }>
+  /** Rows the model returned that failed strict validation and were dropped. */
+  droppedRows: number
 }
+
+// What the MODEL is asked to produce. Deliberately looser than
+// extractedTripSchema: the enums stay (they steer generation and keep the
+// vocabulary correct) but the min/max string limits are gone. Output.object
+// validates during generation, so a single malformed row under the strict
+// schema would throw away all 40 good rows on the card — and a zod error is
+// not retryable, so the router would give up without even rotating.
+const modelTripSchema = z.object({
+  tripDate: z.string(),
+  containerNo: z.string(),
+  size: z.enum(["40", "20"]),
+  tripType: z.enum(["single", "double"]),
+  containerNo2: z.string().nullable().optional(),
+  fromLocation: z.string(),
+  toLocation: z.string(),
+  company: z.enum(["JWC", "JWR"]),
+  direction: z.enum(["EXPORT", "IMPORT"]),
+})
+
+const modelResultSchema = z.object({ trips: z.array(modelTripSchema) })
 
 export async function extractTripsFromImage(
   imageBase64DataUrl: string,
@@ -55,7 +79,11 @@ export async function extractTripsFromImage(
   const result = await withModelRotation("vision", async (model) => {
     const { output } = await generateText({
       model,
-      output: Output.object({ schema: extractionResultSchema }),
+      output: Output.object({ schema: modelResultSchema }),
+      // A 45-row card is ~4k tokens of JSON, and on Gemini this ceiling also
+      // covers thinking tokens. Left at the provider default, a long card gets
+      // truncated mid-JSON and fails to parse.
+      maxOutputTokens: 16_384,
       messages: [
         {
           role: "user",
@@ -69,15 +97,27 @@ export async function extractTripsFromImage(
     return output
   })
 
-  // Schema-validate + sanitize every row so hallucinated/bad data never
-  // reaches the database.
-  const validated = extractionResultSchema.parse(result)
-  return {
-    trips: validated.trips.map((t) => {
-      const { trip, warnings } = sanitizeExtractedTrip(t)
-      return { ...trip, warnings }
-    }),
-  }
+  // Now apply the strict schema per row, so one unusable row costs one row.
+  // Then sanitize, which is where the ISO 6346 checksum is actually verified
+  // (in code, instantly) and surfaced as a warning for human review.
+  const { trips: rawRows } = modelResultSchema.parse(result)
+  let droppedRows = 0
+  const trips = rawRows.flatMap((row) => {
+    const parsed = extractedTripSchema.safeParse(row)
+    if (!parsed.success) {
+      droppedRows += 1
+      console.log(
+        "[extract] dropped unusable row:",
+        JSON.stringify(row).slice(0, 200),
+        parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+      )
+      return []
+    }
+    const { trip, warnings } = sanitizeExtractedTrip(parsed.data)
+    return [{ ...trip, warnings }]
+  })
+
+  return { trips, droppedRows }
 }
 
 const expenseResultSchema = z.object({ expense: extractedExpenseSchema })

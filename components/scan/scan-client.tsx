@@ -83,8 +83,11 @@ export function ScanClient() {
       const queued = data as typeof data & { jobId?: string; status?: string }
       if (!queued.jobId) throw new Error("Scan job was not created")
       let job: { status: string; result?: { trips?: Array<ExtractedTrip & { warnings: string[]; isDuplicate: boolean }> }; errorMessage?: string } = { status: queued.status ?? "queued" }
-      for (let attempt = 0; attempt < 90 && ["queued", "processing"].includes(job.status); attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 1000))
+      // A full 40-row handwritten card can take a vision model 60-120s, and the
+      // server allows up to 300s. Polling for only 90s reported "taking longer
+      // than expected" on cards that were still being extracted successfully.
+      for (let attempt = 0; attempt < 160 && ["queued", "processing"].includes(job.status); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
         const statusResponse = await fetch(`/api/scan?id=${encodeURIComponent(queued.jobId)}`, { cache: "no-store" })
         job = await statusResponse.json()
         if (!statusResponse.ok) throw new Error(job.errorMessage || "Could not check scan status")

@@ -7,12 +7,18 @@ import { requireTenant } from "@/lib/tenant"
 import { extractTripsFromImage } from "@/lib/ai/extract"
 import { writeAudit } from "@/lib/audit"
 
-export const maxDuration = 60
+// Extraction of a 40-row handwritten trip card runs in after(), after the
+// response is sent, but maxDuration still bounds the whole invocation — at 60s
+// the background work was being killed mid-extraction. Must stay above the AI
+// router's TOTAL_BUDGET_MS (240s) so a failure is recorded on the job row
+// rather than the function vanishing.
+export const maxDuration = 300
 
 async function processJob(id: string, organizationId: string, dataUrl: string) {
   try {
     await db.update(scanJobs).set({ status: "processing", attemptCount: 1, updatedAt: new Date(), leaseExpiresAt: new Date(Date.now() + 60_000) }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
-    const { trips: extracted } = await extractTripsFromImage(dataUrl)
+    const { trips: extracted, droppedRows } = await extractTripsFromImage(dataUrl)
+    if (droppedRows > 0) console.log(`[scan] job ${id}: dropped ${droppedRows} unusable row(s)`)
     const existing = await db.select({ tripDate: trips.tripDate, containerNo: trips.containerNo }).from(trips).where(eq(trips.organizationId, organizationId))
     const duplicateSet = new Set(existing.map((trip) => `${trip.tripDate}|${trip.containerNo}`))
     const result = extracted.map((trip) => ({ ...trip, isDuplicate: duplicateSet.has(`${trip.tripDate}|${trip.containerNo}`) }))
@@ -33,10 +39,25 @@ export async function POST(req: Request) {
   const dataUrl = `data:${file.type || "image/jpeg"};base64,${buffer.toString("base64")}`
   const id = randomUUID()
   const [job] = await db.insert(scanJobs).values({ id, organizationId: tenant.organizationId, createdByUserId: tenant.user.id, status: "queued", input: { dataUrl }, idempotencyKey }).onConflictDoNothing().returning()
-  const selected = job ?? (await db.select().from(scanJobs).where(and(eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.idempotencyKey, idempotencyKey))).limit(1))[0]
-  if (job) {
-    await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "scan.queued", entityType: "scan_job", entityId: id })
-    after(() => processJob(id, tenant.organizationId, dataUrl))
+  let selected = job ?? (await db.select().from(scanJobs).where(and(eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.idempotencyKey, idempotencyKey))).limit(1))[0]
+  // Re-uploading the same photo hashes to the same idempotency key, so a failed
+  // job used to be handed back forever and every retry showed the identical old
+  // error even once the cause was fixed. Reset a failed job and run it again;
+  // succeeded/queued/processing jobs are still returned as-is (that is the
+  // point of the key). Guarded on status = 'failed' so two concurrent retries
+  // cannot both revive it.
+  let revived = false
+  if (!job && selected?.status === "failed") {
+    const [reset] = await db.update(scanJobs).set({ status: "queued", errorCode: null, errorMessage: null, result: null, completedAt: null, attemptCount: 0, updatedAt: new Date() }).where(and(eq(scanJobs.id, selected.id), eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.status, "failed"))).returning()
+    if (reset) {
+      selected = reset
+      revived = true
+    }
+  }
+  if (job || revived) {
+    await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "scan.queued", entityType: "scan_job", entityId: selected.id })
+    const jobId = selected.id
+    after(() => processJob(jobId, tenant.organizationId, dataUrl))
   }
   return Response.json({ jobId: selected.id, status: selected.status }, { status: job ? 202 : 200 })
 }

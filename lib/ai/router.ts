@@ -32,9 +32,10 @@ const DEFAULT_MODELS: Record<ProviderName, Partial<Record<TaskType, string>>> =
       reasoning: "gemini-3.5-flash",
     },
     groq: {
-      vision: "meta-llama/llama-4-scout-17b-16e-instruct",
+      // Groq no longer serves a vision model (llama-4-scout was retired), so
+      // it is text/reasoning only — see TASK_PROVIDER_ORDER.vision below.
       text: "llama-3.3-70b-versatile",
-      reasoning: "qwen/qwen3-32b",
+      reasoning: "qwen/qwen3.6-27b",
     },
     openrouter: {
       vision: "google/gemini-2.5-flash",
@@ -42,15 +43,16 @@ const DEFAULT_MODELS: Record<ProviderName, Partial<Record<TaskType, string>>> =
       reasoning: "qwen/qwen3-coder:free",
     },
     nvidia: {
+      vision: "meta/llama-3.2-90b-vision-instruct",
       text: "meta/llama-3.3-70b-instruct",
-      reasoning: "qwen/qwen3-coder-480b-a35b-instruct",
+      reasoning: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
     },
   }
 
 // Provider priority per task: vision favors Gemini (best OCR), text favors
 // Groq (fastest), reasoning favors Qwen-class models.
 const TASK_PROVIDER_ORDER: Record<TaskType, ProviderName[]> = {
-  vision: ["gemini", "groq", "openrouter"],
+  vision: ["gemini", "openrouter", "nvidia"],
   text: ["groq", "gemini", "openrouter", "nvidia"],
   reasoning: ["groq", "nvidia", "openrouter", "gemini"],
 }
@@ -62,12 +64,16 @@ const ENV_PREFIX: Record<ProviderName, string> = {
   nvidia: "NVIDIA_API_KEY",
 }
 
+// Free-tier quota is per key, so we pool many keys per provider and rotate on
+// 429s. Bump this if you add more numbered keys than the current ceiling.
+const MAX_KEYS_PER_PROVIDER = 15
+
 function keysFor(provider: ProviderName): string[] {
   const prefix = ENV_PREFIX[provider]
   const keys: string[] = []
   const base = process.env[prefix]
   if (base) keys.push(base)
-  for (let i = 1; i <= 5; i++) {
+  for (let i = 1; i <= MAX_KEYS_PER_PROVIDER; i++) {
     const k = process.env[`${prefix}_${i}`]
     if (k && !keys.includes(k)) keys.push(k)
   }
@@ -151,12 +157,15 @@ function isRetryableError(err: unknown): boolean {
   )
 }
 
-// Per-attempt timeout: a hung free-tier provider must not eat the whole
-// serverless time budget (Vercel kills the function at maxDuration -> 504).
-const ATTEMPT_TIMEOUT_MS = 25_000
-// Total budget: stay safely under the route's maxDuration = 60s so we can
-// return a real JSON error instead of a gateway 504.
-const TOTAL_BUDGET_MS = 50_000
+// Per-attempt timeout. A 40-row handwritten trip card legitimately takes a
+// vision model 40-90s, and extraction runs inside after() where nobody is
+// waiting on the response — so this is only here to cut off a genuinely hung
+// provider. The old 25s value was shorter than the work itself, which is why
+// large multi-trip cards failed while single printed receipts succeeded.
+const ATTEMPT_TIMEOUT_MS = 90_000
+// Total budget: stay under the scan route's maxDuration so we can still record
+// a real error on the scan_job instead of being killed mid-write.
+const TOTAL_BUDGET_MS = 240_000
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -192,9 +201,16 @@ export async function withModelRotation<T>(
   }
   const started = Date.now()
   let lastError: unknown
+  // Candidates are ordered provider-major (every Gemini key, then every
+  // OpenRouter key, ...). A timeout means that MODEL is too slow for this
+  // workload, not that this key is exhausted — so retrying its dozen sibling
+  // keys just burns the budget and the later providers are never reached.
+  // Quota/auth failures are per-key, so those still rotate key by key.
+  const exhaustedProviders = new Set<ProviderName>()
   for (const candidate of candidates) {
+    if (exhaustedProviders.has(candidate.provider)) continue
     const remaining = TOTAL_BUDGET_MS - (Date.now() - started)
-    if (remaining < 5_000) break // not enough time for another attempt
+    if (remaining < 10_000) break // not enough time for a meaningful attempt
     try {
       return await withTimeout(
         fn(candidate.model, candidate),
@@ -204,8 +220,9 @@ export async function withModelRotation<T>(
       lastError = err
       const timedOut = err instanceof Error && err.message.includes("timed out")
       if (!timedOut && !isRetryableError(err)) throw err
+      if (timedOut) exhaustedProviders.add(candidate.provider)
       console.log(
-        `[ai-router] ${candidate.provider}/${candidate.modelId} key#${candidate.keyIndex + 1} failed, rotating:`,
+        `[ai-router] ${candidate.provider}/${candidate.modelId} key#${candidate.keyIndex + 1} failed, rotating${timedOut ? ` past all ${candidate.provider} keys (timeout)` : ""}:`,
         err instanceof Error ? err.message.slice(0, 200) : err,
       )
     }
