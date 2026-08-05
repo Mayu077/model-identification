@@ -52,6 +52,11 @@ export const trips = pgTable("trips", {
   id: bigserial("id", { mode: "number" }).primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), tripDate: date("trip_date").notNull(),
   containerNo: text("container_no").notNull(), size: text("size").notNull(), tripType: text("trip_type").notNull(), containerNo2: text("container_no_2"), fromLocation: text("from_location").notNull(),
   toLocation: text("to_location").notNull(), company: text("company").notNull(), direction: text("direction").notNull(), rate: integer("rate").notNull(), notes: text("notes"),
+  // Provenance for the trip-check feature: which scanned card this row came off
+  // and where on it. Both null for manual entries and for the legacy import.
+  // ON DELETE SET NULL, not CASCADE — losing the card must never delete a trip.
+  scanJobId: text("scan_job_id").references(() => scanJobs.id, { onDelete: "set null" }),
+  sourceBox: jsonb("source_box"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique("trips_organization_id_id_key").on(t.id, t.organizationId),
@@ -87,6 +92,14 @@ export const scanJobs = pgTable("scan_jobs", {
   id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), createdByUserId: text("created_by_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   status: text("status").notNull(), input: jsonb("input").notNull().default({}), result: jsonb("result"), errorCode: text("error_code"), errorMessage: text("error_message"), attemptCount: integer("attempt_count").notNull().default(0),
   idempotencyKey: text("idempotency_key").notNull(), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(), completedAt: timestamp("completed_at", { withTimezone: true }),
+  // The uploaded card is kept in Vercel Blob (see lib/blob.ts) so the review UI
+  // can show each row's own strip of the photo. `input` still holds the base64
+  // only until extraction finishes, then it is cleared; imagePath outlives it.
+  // Width/height are the compressed dimensions the model actually saw, which is
+  // what sourceBox percentages are relative to.
+  imagePath: text("image_path"), imageWidth: integer("image_width"), imageHeight: integer("image_height"),
+  // Retention: purged by app/api/cron/purge-images. Null means "no image".
+  imageExpiresAt: timestamp("image_expires_at", { withTimezone: true }),
 }, (t) => [
   unique("scan_jobs_organization_id_idempotency_key_key").on(t.organizationId, t.idempotencyKey),
   check("scan_jobs_status_check", sql`status = ANY (ARRAY['queued'::text, 'processing'::text, 'succeeded'::text, 'failed'::text])`),

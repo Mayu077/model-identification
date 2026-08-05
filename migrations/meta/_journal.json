@@ -15,6 +15,13 @@
       "when": 1785270912766,
       "tag": "0001_trips_dedup_constraint",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785896534394,
+      "tag": "0002_trip_card_image_provenance",
+      "breakpoints": true
     }
   ]
 }

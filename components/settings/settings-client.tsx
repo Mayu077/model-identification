@@ -6,6 +6,7 @@ import { updateRate } from "@/app/actions/trips"
 import { updateSetting } from "@/app/actions/settings"
 import type { Rate } from "@/lib/db/schema"
 import { formatINR } from "@/lib/domain"
+import { DEFAULT_IMAGE_RETENTION_DAYS, IMAGE_RETENTION_SETTING_KEY } from "@/lib/retention"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -165,6 +166,44 @@ export function SettingsClient({
           <Button onClick={saveSettings} disabled={busy} className="self-end">
             {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
             Save Details
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Scanned card images</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <p className="text-sm text-muted-foreground text-pretty">
+            Uploaded trip cards are kept so you can check a saved entry against the original
+            handwriting. After this many days the photo is deleted automatically — the trip
+            entries themselves are never touched. Set 0 to keep photos indefinitely.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`s-${IMAGE_RETENTION_SETTING_KEY}`} className="text-xs">
+              Delete card photos after (days)
+            </Label>
+            <Input
+              id={`s-${IMAGE_RETENTION_SETTING_KEY}`}
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={3650}
+              className="w-32"
+              value={
+                settingDrafts[IMAGE_RETENTION_SETTING_KEY] ??
+                settings[IMAGE_RETENTION_SETTING_KEY] ??
+                String(DEFAULT_IMAGE_RETENTION_DAYS)
+              }
+              onChange={(e) =>
+                setSettingDrafts((d) => ({ ...d, [IMAGE_RETENTION_SETTING_KEY]: e.target.value }))
+              }
+            />
+          </div>
+          <Button onClick={saveSettings} disabled={busy} className="self-end">
+            {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+            Save Retention
           </Button>
         </CardContent>
       </Card>

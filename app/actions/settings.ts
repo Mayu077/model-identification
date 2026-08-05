@@ -4,6 +4,7 @@ import { db } from "@/lib/db"
 import { settings } from "@/lib/db/schema"
 import { writeAudit } from "@/lib/audit"
 import { requireTenant } from "@/lib/tenant"
+import { IMAGE_RETENTION_SETTING_KEY, parseRetentionDays } from "@/lib/retention"
 import { and, eq, sql } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
@@ -13,11 +14,13 @@ export async function getSettings(): Promise<Record<string, string>> {
   const rows = await db.select().from(settings).where(eq(settings.organizationId, tenant.organizationId))
   return Object.fromEntries(rows.map((row) => [row.key, row.value]))
 }
-const ALLOWED_KEYS = ["business_name", "business_tagline", "business_address", "business_mobile", "business_email", "gstin", "pan", "invoice_prefix", "invoice_counter", "gst_percent", "bill_to"] as const
+const ALLOWED_KEYS = ["business_name", "business_tagline", "business_address", "business_mobile", "business_email", "gstin", "pan", "invoice_prefix", "invoice_counter", "gst_percent", "bill_to", IMAGE_RETENTION_SETTING_KEY] as const
 export async function updateSetting(key: string, value: string) {
   const tenant = await requireTenant()
   const parsedKey = z.enum(ALLOWED_KEYS).parse(key)
-  const parsedValue = z.string().max(500).parse(value)
+  // Retention drives an irreversible delete, so normalize it here rather than
+  // trusting whatever the form posted.
+  const parsedValue = parsedKey === IMAGE_RETENTION_SETTING_KEY ? String(parseRetentionDays(value)) : z.string().max(500).parse(value)
   await db.insert(settings).values({ organizationId: tenant.organizationId, key: parsedKey, value: parsedValue }).onConflictDoUpdate({ target: [settings.organizationId, settings.key], set: { value: parsedValue } })
   await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "setting.updated", entityType: "setting", entityId: parsedKey })
   revalidatePath("/settings")

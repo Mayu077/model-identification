@@ -3,7 +3,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { db } from "@/lib/db"
 import { auditLogs, ownerInvites } from "@/lib/db/schema"
-import { requireTenant } from "@/lib/tenant"
+import { isPlatformOwner, requireTenant } from "@/lib/tenant"
 import { writeAudit } from "@/lib/audit"
 import { and, desc, eq, isNull } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
@@ -31,5 +31,7 @@ export async function getOwnerAdminData() {
     db.select({ id: ownerInvites.id, organizationName: ownerInvites.organizationName, expiresAt: ownerInvites.expiresAt, consumedAt: ownerInvites.consumedAt, revokedAt: ownerInvites.revokedAt, createdAt: ownerInvites.createdAt }).from(ownerInvites).where(eq(ownerInvites.createdByUserId, tenant.user.id)).orderBy(desc(ownerInvites.createdAt)).limit(50),
     db.select().from(auditLogs).where(eq(auditLogs.organizationId, tenant.organizationId)).orderBy(desc(auditLogs.createdAt)).limit(100),
   ])
-  return { invites, logs }
+  // Drives the training-export card. The route enforces this too — this only
+  // decides whether the button is worth rendering.
+  return { invites, logs, platformOwner: isPlatformOwner(tenant.user.email) }
 }

@@ -45,12 +45,53 @@ Rules:
 - company: "JWC" if the trip starts or ends at JWC, "JWR" if it starts or ends at JWR.
 - direction: if the trip goes FROM JWC/JWR TO a port terminal (NSICT, NSIGT, GTI, JNPT, BMCT, JNB) it is "EXPORT". If it comes FROM a port terminal TO JWC/JWR it is "IMPORT".
 - Dates: the card may show only day/month (e.g. "17/5" or "17-5-26"). Output full ISO dates (YYYY-MM-DD). Current year is ${new Date().getFullYear()} — use it when the year is missing unless context clearly says otherwise.
-- Output dates, sizes and locations EXACTLY in the required format. Never output anything not in the schema.`
+- Output dates, sizes and locations EXACTLY in the required format. Never output anything not in the schema.
+
+ROW POSITION (rowTop / rowBottom): for each trip also report where you read it, so the owner can be shown that exact strip of the photo to check against. Use a vertical scale where 0 is the very top edge of the image and 1000 is the very bottom edge. rowTop is the top of that row's band, rowBottom is the bottom. You do NOT need pixel precision and you must NOT do any careful measuring — a rough band that contains the row's handwriting is enough, and a whole-row band is better than a tight one. Requirements: rowTop < rowBottom, and the band should be roughly the height of one row (on a 40-row card each band is about 20-25 units tall; on a card with few rows they are much taller). For a merged continuation line, cover both physical lines in one band. If you genuinely cannot tell where a row sat, set both to null rather than guessing a wrong position — a wrong band is worse than none.`
+
+/**
+ * Where on the card a row was read from, as a fraction (0-1) of image height.
+ * Only the vertical band is captured: a trip occupies a full-width row of the
+ * grid, so the horizontal extent is always "all of it", and asking a vision
+ * model for a tight 4-sided box is markedly less reliable than asking for a
+ * band. Null whenever the model declined or returned something implausible.
+ */
+export interface SourceBox {
+  top: number
+  bottom: number
+}
 
 export interface TripExtractionResult {
-  trips: Array<ExtractedTrip & { warnings: string[] }>
+  trips: Array<ExtractedTrip & { warnings: string[]; sourceBox: SourceBox | null }>
   /** Rows the model returned that failed strict validation and were dropped. */
   droppedRows: number
+  /** Rows whose reported position was missing or implausible and was discarded. */
+  droppedBoxes: number
+}
+
+// Model reports 0-1000 over image height. Anything outside these bounds is a
+// hallucinated position, and showing the owner the wrong strip of the card
+// during a verification step is worse than showing none — so it is discarded
+// rather than clamped into something that merely looks plausible.
+const MIN_BAND_UNITS = 3 // thinner than this and the crop shows a sliver of ink
+const MAX_BAND_UNITS = 400 // taller than 40% of the card is not one row
+
+function toSourceBox(
+  rowTop: number | null | undefined,
+  rowBottom: number | null | undefined,
+): SourceBox | null {
+  if (typeof rowTop !== "number" || typeof rowBottom !== "number") return null
+  if (!Number.isFinite(rowTop) || !Number.isFinite(rowBottom)) return null
+  if (rowTop < 0 || rowBottom > 1000 || rowTop >= rowBottom) return null
+  const height = rowBottom - rowTop
+  if (height < MIN_BAND_UNITS || height > MAX_BAND_UNITS) return null
+  // Pad by a fifth of the band so descenders and the row's ruling lines are not
+  // shaved off, which is exactly what makes a crop hard to read.
+  const pad = height * 0.2
+  return {
+    top: Math.max(0, rowTop - pad) / 1000,
+    bottom: Math.min(1000, rowBottom + pad) / 1000,
+  }
 }
 
 // What the MODEL is asked to produce. Deliberately looser than
@@ -69,6 +110,10 @@ const modelTripSchema = z.object({
   toLocation: z.string(),
   company: z.enum(["JWC", "JWR"]),
   direction: z.enum(["EXPORT", "IMPORT"]),
+  // Vertical band this row was read from, 0-1000 over image height. Nullable so
+  // a model that cannot place a row says so instead of inventing a number.
+  rowTop: z.number().nullable().optional(),
+  rowBottom: z.number().nullable().optional(),
 })
 
 const modelResultSchema = z.object({ trips: z.array(modelTripSchema) })
@@ -102,7 +147,10 @@ export async function extractTripsFromImage(
   // (in code, instantly) and surfaced as a warning for human review.
   const { trips: rawRows } = modelResultSchema.parse(result)
   let droppedRows = 0
+  let droppedBoxes = 0
   const trips = rawRows.flatMap((row) => {
+    // extractedTripSchema strips rowTop/rowBottom (unknown keys), so read the
+    // position off the raw row before parsing.
     const parsed = extractedTripSchema.safeParse(row)
     if (!parsed.success) {
       droppedRows += 1
@@ -113,11 +161,13 @@ export async function extractTripsFromImage(
       )
       return []
     }
+    const sourceBox = toSourceBox(row.rowTop, row.rowBottom)
+    if (!sourceBox) droppedBoxes += 1
     const { trip, warnings } = sanitizeExtractedTrip(parsed.data)
-    return [{ ...trip, warnings }]
+    return [{ ...trip, warnings, sourceBox }]
   })
 
-  return { trips, droppedRows }
+  return { trips, droppedRows, droppedBoxes }
 }
 
 const expenseResultSchema = z.object({ expense: extractedExpenseSchema })

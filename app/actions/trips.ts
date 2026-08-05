@@ -1,7 +1,7 @@
 "use server"
 
 import { db } from "@/lib/db"
-import { rates, trips } from "@/lib/db/schema"
+import { rates, scanJobs, trips } from "@/lib/db/schema"
 import { extractedTripSchema, normalizeContainerNo, tripKindOf, type ExtractedTrip } from "@/lib/domain"
 import { writeAudit } from "@/lib/audit"
 import { requireTenant } from "@/lib/tenant"
@@ -48,20 +48,43 @@ export async function findDuplicates(entries: Array<{ tripDate: string; containe
   return entries.filter((entry, i) => keys.has(`${normalized[i].tripDate}|${normalized[i].containerNo}`))
 }
 
+// Provenance sent by the scan review UI: which stored card the row came off and
+// the vertical band it occupied. Validated rather than trusted — this is a
+// public server action, and the values end up driving an image crop.
+const sourceBoxSchema = z.object({ top: z.number().min(0).max(1), bottom: z.number().min(0).max(1) })
+  .refine((box) => box.top < box.bottom, "box top must be above bottom")
+const tripProvenanceSchema = z.object({
+  scanJobId: z.string().min(1).max(64).nullable().optional(),
+  sourceBox: sourceBoxSchema.nullable().optional(),
+})
+export type SaveTripInput = ExtractedTrip & z.infer<typeof tripProvenanceSchema>
+
 export interface SaveTripsResult { saved: number; skippedDuplicates: number; errors: string[] }
-export async function saveTrips(rawEntries: ExtractedTrip[]): Promise<SaveTripsResult> {
+export async function saveTrips(rawEntries: SaveTripInput[]): Promise<SaveTripsResult> {
   const tenant = await requireTenant()
   const result: SaveTripsResult = { saved: 0, skippedDuplicates: 0, errors: [] }
+  // Only accept a scan job that belongs to this org, so a forged id cannot
+  // attach one tenant's trip to another tenant's card image.
+  const claimedJobIds = [...new Set(rawEntries.map((e) => e.scanJobId).filter((id): id is string => typeof id === "string" && id.length > 0))]
+  const ownedJobIds = new Set(
+    claimedJobIds.length === 0
+      ? []
+      : (await db.select({ id: scanJobs.id }).from(scanJobs).where(and(eq(scanJobs.organizationId, tenant.organizationId), inArray(scanJobs.id, claimedJobIds)))).map((row) => row.id),
+  )
   for (const raw of rawEntries) {
     const parsed = extractedTripSchema.safeParse(raw)
     if (!parsed.success) { result.errors.push(`${raw.containerNo ?? "?"}: invalid data`); continue }
     const t = parsed.data
+    const provenance = tripProvenanceSchema.safeParse(raw)
+    const scanJobId = provenance.success && provenance.data.scanJobId && ownedJobIds.has(provenance.data.scanJobId) ? provenance.data.scanJobId : null
+    // A box is only meaningful next to the card it was measured on.
+    const sourceBox = scanJobId && provenance.success ? (provenance.data.sourceBox ?? null) : null
     // Normalize server-side too. saveTrips is a public server action, and
     // trips_unique_entry only dedupes if container numbers arrive in one form.
     const containerNo = normalizeContainerNo(t.containerNo)
     try {
       const rate = await rateFor(tenant.organizationId, t.company, t.direction, t.size, t.tripType)
-      const inserted = await db.insert(trips).values({ organizationId: tenant.organizationId, tripDate: t.tripDate, containerNo, size: t.size, tripType: t.tripType, containerNo2: t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null, fromLocation: t.fromLocation, toLocation: t.toLocation, company: t.company, direction: t.direction, rate }).onConflictDoNothing().returning({ id: trips.id })
+      const inserted = await db.insert(trips).values({ organizationId: tenant.organizationId, tripDate: t.tripDate, containerNo, size: t.size, tripType: t.tripType, containerNo2: t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null, fromLocation: t.fromLocation, toLocation: t.toLocation, company: t.company, direction: t.direction, rate, scanJobId, sourceBox }).onConflictDoNothing().returning({ id: trips.id })
       if (inserted.length) result.saved += 1
       else result.skippedDuplicates += 1
     } catch (error) { result.errors.push(`${t.containerNo}: ${error instanceof Error ? error.message : "unknown error"}`) }

@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { RowCrop, type RowBox } from "@/components/scan/row-crop"
 import { toast } from "sonner"
 import { Camera, Loader2, ScanLine, Trash2, TriangleAlert, Upload } from "lucide-react"
 
@@ -21,6 +22,24 @@ type ReviewTrip = ExtractedTrip & {
   warnings: string[]
   isDuplicate: boolean
   include: boolean
+  /** Where on the card this row was read from, for the crop preview. */
+  sourceBox: RowBox | null
+}
+
+/** Shape the scan API returns for one extracted row. */
+type ScannedTrip = ExtractedTrip & {
+  warnings: string[]
+  isDuplicate: boolean
+  sourceBox: RowBox | null
+}
+
+interface ScanJobStatus {
+  status: string
+  result?: { trips?: ScannedTrip[] }
+  errorMessage?: string
+  hasImage?: boolean
+  imageWidth?: number | null
+  imageHeight?: number | null
 }
 
 export function ScanClient() {
@@ -31,6 +50,11 @@ export function ScanClient() {
   const [saving, setSaving] = useState(false)
   const [rows, setRows] = useState<ReviewTrip[] | null>(null)
   const [result, setResult] = useState<SaveTripsResult | null>(null)
+  // Set once the scan finishes, so each review row can show its own strip of the
+  // stored card. Served through /api/scan/image, not the local object URL: the
+  // stored copy is the exact image the model read and the one that survives a
+  // page reload.
+  const [card, setCard] = useState<{ jobId: string; src: string; aspect: number | null } | null>(null)
 
   // Phone photos are often 8-15MB which exceeds the server upload limit and
   // caused "Unexpected token" errors (server returned an HTML error page, not
@@ -54,6 +78,7 @@ export function ScanClient() {
   async function handleFile(file: File) {
     setResult(null)
     setRows(null)
+    setCard(null)
     setPreview(URL.createObjectURL(file))
     setScanning(true)
     try {
@@ -71,10 +96,7 @@ export function ScanClient() {
       if (res.redirected || res.status === 401 || res.status === 403) {
         throw new Error("Your session expired — please sign in again, then retry this upload.")
       }
-      let data: {
-        error?: string
-        trips?: Array<ExtractedTrip & { warnings: string[]; isDuplicate: boolean }>
-      }
+      let data: { error?: string; trips?: ScannedTrip[] }
       try {
         data = await res.json()
       } catch {
@@ -87,7 +109,7 @@ export function ScanClient() {
       if (!res.ok) throw new Error(data.error || "Scan failed")
       const queued = data as typeof data & { jobId?: string; status?: string }
       if (!queued.jobId) throw new Error("Scan job was not created")
-      let job: { status: string; result?: { trips?: Array<ExtractedTrip & { warnings: string[]; isDuplicate: boolean }> }; errorMessage?: string } = { status: queued.status ?? "queued" }
+      let job: ScanJobStatus = { status: queued.status ?? "queued" }
       // A full 40-row handwritten card can take a vision model 60-120s, and the
       // server allows up to 300s. Polling for only 90s reported "taking longer
       // than expected" on cards that were still being extracted successfully.
@@ -105,14 +127,23 @@ export function ScanClient() {
       if (job.status === "failed") throw new Error(job.errorMessage || "Scan extraction failed")
       if (job.status !== "succeeded") throw new Error("Scan is taking longer than expected. You can safely retry.")
       data.trips = job.result?.trips ?? []
-      const trips: ReviewTrip[] = (data.trips ?? []).map(
-        (t: ExtractedTrip & { warnings: string[]; isDuplicate: boolean }) => ({
-          ...t,
-          include: !t.isDuplicate,
-        }),
-      )
+      const trips: ReviewTrip[] = (data.trips ?? []).map((t) => ({
+        ...t,
+        sourceBox: t.sourceBox ?? null,
+        include: !t.isDuplicate,
+      }))
       if (trips.length === 0) {
         toast.warning("No trips found in this image. Try a clearer photo.")
+      }
+      if (job.hasImage) {
+        setCard({
+          jobId: queued.jobId,
+          src: `/api/scan/image/${encodeURIComponent(queued.jobId)}`,
+          // Without both dimensions the crop cannot be sized to the row, so the
+          // preview falls back to its magnified mode instead of guessing.
+          aspect:
+            job.imageWidth && job.imageHeight ? job.imageWidth / job.imageHeight : null,
+        })
       }
       setRows(trips)
     } catch (err) {
@@ -142,7 +173,13 @@ export function ScanClient() {
     setSaving(true)
     try {
       const res = await saveTrips(
-        toSave.map(({ warnings: _w, isDuplicate: _d, include: _i, ...t }) => t),
+        toSave.map(({ warnings: _w, isDuplicate: _d, include: _i, sourceBox, ...t }) => ({
+          ...t,
+          // Keep the provenance with the saved trip so an owner can re-open the
+          // exact strip of the card later, not just at review time.
+          scanJobId: card?.jobId ?? null,
+          sourceBox,
+        })),
       )
       setResult(res)
       if (res.errors.length > 0) {
@@ -153,6 +190,7 @@ export function ScanClient() {
         )
         setRows(null)
         setPreview(null)
+        setCard(null)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Save failed")
@@ -242,6 +280,7 @@ export function ScanClient() {
                 onClick={() => {
                   setRows(null)
                   setPreview(null)
+                  setCard(null)
                 }}
               >
                 Rescan
@@ -298,6 +337,15 @@ export function ScanClient() {
                         ))}
                       </ul>
                     </div>
+                  )}
+
+                  {card && (
+                    <RowCrop
+                      src={card.src}
+                      aspect={card.aspect}
+                      box={row.sourceBox}
+                      label={row.containerNo}
+                    />
                   )}
 
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

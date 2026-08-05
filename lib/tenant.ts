@@ -5,6 +5,18 @@ import { eq } from "drizzle-orm"
 import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 
+/**
+ * The single bootstrap account that operates the platform itself, as opposed to
+ * owning one business on it. Same check as onboarding uses to let this address
+ * register without an invite code — it is the only cross-organization identity
+ * in the system.
+ */
+export function isPlatformOwner(email: string | null | undefined): boolean {
+  const bootstrap = process.env.BOOTSTRAP_OWNER_EMAIL?.trim().toLowerCase()
+  if (!bootstrap || !email) return false
+  return email.trim().toLowerCase() === bootstrap
+}
+
 export async function getSessionUser() {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session?.user) return null

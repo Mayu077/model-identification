@@ -1,11 +1,15 @@
 import { after } from "next/server"
 import { and, eq } from "drizzle-orm"
 import { createHash, randomUUID } from "node:crypto"
+import { readImageSize } from "@/lib/image-size"
 import { db } from "@/lib/db"
 import { scanJobs, trips } from "@/lib/db/schema"
 import { requireTenantApi } from "@/lib/tenant"
 import { extractTripsFromImage } from "@/lib/ai/extract"
 import { writeAudit } from "@/lib/audit"
+import { isBlobConfigured, putTripCard } from "@/lib/blob"
+import { retentionExpiryFrom } from "@/lib/retention"
+import { imageRetentionDays } from "@/lib/retention.server"
 
 // Extraction of a 40-row handwritten trip card runs in after(), after the
 // response is sent, but maxDuration still bounds the whole invocation — at 60s
@@ -36,14 +40,40 @@ async function resolveTenant(): Promise<
   }
 }
 
-async function processJob(id: string, organizationId: string, dataUrl: string) {
+/**
+ * Store the uploaded card so the review UI can show each row's own strip of it.
+ * Best-effort by design: if Blob is unreachable or unconfigured the scan must
+ * still complete, just without the visual cross-check. Runs inside after(), so
+ * the upload never adds latency to the POST the browser is waiting on.
+ */
+async function storeCardImage(id: string, organizationId: string, buffer: Buffer, contentType: string) {
+  if (!isBlobConfigured()) return
+  try {
+    const imagePath = await putTripCard(organizationId, id, buffer, contentType)
+    const days = await imageRetentionDays(organizationId)
+    await db.update(scanJobs).set({ imagePath, imageExpiresAt: retentionExpiryFrom(days), updatedAt: new Date() }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
+  } catch (error) {
+    console.log(`[scan] job ${id}: could not store card image:`, error instanceof Error ? error.message.slice(0, 200) : error)
+  }
+}
+
+async function processJob(id: string, organizationId: string, dataUrl: string, buffer: Buffer, contentType: string) {
   try {
     await db.update(scanJobs).set({ status: "processing", attemptCount: 1, updatedAt: new Date(), leaseExpiresAt: new Date(Date.now() + 60_000) }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
-    const { trips: extracted, droppedRows } = await extractTripsFromImage(dataUrl)
+    // Upload alongside extraction rather than before it: the two are
+    // independent, and extraction is the slow half of the budget.
+    const [, extraction] = await Promise.all([
+      storeCardImage(id, organizationId, buffer, contentType),
+      extractTripsFromImage(dataUrl),
+    ])
+    const { trips: extracted, droppedRows, droppedBoxes } = extraction
     if (droppedRows > 0) console.log(`[scan] job ${id}: dropped ${droppedRows} unusable row(s)`)
+    if (droppedBoxes > 0) console.log(`[scan] job ${id}: ${droppedBoxes} of ${extracted.length} row(s) had no usable position, crop preview hidden for those`)
     const existing = await db.select({ tripDate: trips.tripDate, containerNo: trips.containerNo }).from(trips).where(eq(trips.organizationId, organizationId))
     const duplicateSet = new Set(existing.map((trip) => `${trip.tripDate}|${trip.containerNo}`))
     const result = extracted.map((trip) => ({ ...trip, isDuplicate: duplicateSet.has(`${trip.tripDate}|${trip.containerNo}`) }))
+    // input (the base64 copy) is still cleared here — the durable copy now lives
+    // in Blob, and leaving megabytes of data URL in Postgres was pure waste.
     await db.update(scanJobs).set({ status: "succeeded", result: { trips: result }, input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
   } catch (error) {
     await db.update(scanJobs).set({ status: "failed", errorCode: "EXTRACTION_FAILED", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Extraction failed", input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
@@ -59,9 +89,13 @@ export async function POST(req: Request) {
   if (file.size > 10 * 1024 * 1024) return Response.json({ error: "Image too large (max 10MB)" }, { status: 400 })
   const buffer = Buffer.from(await file.arrayBuffer())
   const idempotencyKey = createHash("sha256").update(buffer).digest("hex")
-  const dataUrl = `data:${file.type || "image/jpeg"};base64,${buffer.toString("base64")}`
+  const contentType = file.type || "image/jpeg"
+  const dataUrl = `data:${contentType};base64,${buffer.toString("base64")}`
   const id = randomUUID()
-  const [job] = await db.insert(scanJobs).values({ id, organizationId: tenant.organizationId, createdByUserId: tenant.user.id, status: "queued", input: { dataUrl }, idempotencyKey }).onConflictDoNothing().returning()
+  // Read the real dimensions from the bytes. sourceBox fractions are relative to
+  // this image, so a wrong ratio would offset every row crop in the review UI.
+  const size = readImageSize(buffer)
+  const [job] = await db.insert(scanJobs).values({ id, organizationId: tenant.organizationId, createdByUserId: tenant.user.id, status: "queued", input: { dataUrl }, idempotencyKey, imageWidth: size?.width ?? null, imageHeight: size?.height ?? null }).onConflictDoNothing().returning()
   let selected = job ?? (await db.select().from(scanJobs).where(and(eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.idempotencyKey, idempotencyKey))).limit(1))[0]
   // Re-uploading the same photo hashes to the same idempotency key, so a failed
   // job used to be handed back forever and every retry showed the identical old
@@ -80,7 +114,7 @@ export async function POST(req: Request) {
   if (job || revived) {
     await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "scan.queued", entityType: "scan_job", entityId: selected.id })
     const jobId = selected.id
-    after(() => processJob(jobId, tenant.organizationId, dataUrl))
+    after(() => processJob(jobId, tenant.organizationId, dataUrl, buffer, contentType))
   }
   return Response.json({ jobId: selected.id, status: selected.status }, { status: job ? 202 : 200 })
 }
@@ -90,7 +124,10 @@ export async function GET(req: Request) {
   if (!tenant) return response
   const id = new URL(req.url).searchParams.get("id")
   if (!id) return Response.json({ error: "Job id required" }, { status: 400 })
-  const [job] = await db.select({ id: scanJobs.id, status: scanJobs.status, result: scanJobs.result, errorMessage: scanJobs.errorMessage }).from(scanJobs).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, tenant.organizationId))).limit(1)
+  const [job] = await db.select({ id: scanJobs.id, status: scanJobs.status, result: scanJobs.result, errorMessage: scanJobs.errorMessage, imagePath: scanJobs.imagePath, imageWidth: scanJobs.imageWidth, imageHeight: scanJobs.imageHeight }).from(scanJobs).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, tenant.organizationId))).limit(1)
   if (!job) return Response.json({ error: "Job not found" }, { status: 404 })
-  return Response.json(job)
+  // The blob pathname stays server-side; the client only needs to know whether
+  // an image exists and its aspect ratio, then reads it via the proxy route.
+  const { imagePath, ...rest } = job
+  return Response.json({ ...rest, hasImage: Boolean(imagePath) })
 }
