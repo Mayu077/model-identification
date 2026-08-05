@@ -4,7 +4,7 @@ import { db } from "@/lib/db"
 import { expenses } from "@/lib/db/schema"
 import { EXPENSE_CATEGORIES } from "@/lib/domain"
 import { and, between, desc, eq } from "drizzle-orm"
-import { requireTenant } from "@/lib/tenant"
+import { requireOwner } from "@/lib/tenant"
 import { writeAudit } from "@/lib/audit"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
@@ -18,7 +18,7 @@ const expenseInputSchema = z.object({
 })
 
 export async function addExpense(input: z.infer<typeof expenseInputSchema>) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const e = expenseInputSchema.parse(input)
   const [row] = await db
     .insert(expenses)
@@ -38,7 +38,7 @@ export async function addExpense(input: z.infer<typeof expenseInputSchema>) {
 }
 
 export async function getExpenses(from?: string, to?: string) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   if (from && to) {
     return db
       .select()
@@ -58,7 +58,7 @@ export async function updateExpense(
   id: number,
   input: z.infer<typeof expenseInputSchema>,
 ) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const e = expenseInputSchema.parse(input)
   await db
     .update(expenses)
@@ -74,7 +74,7 @@ export async function updateExpense(
 }
 
 export async function deleteExpense(id: number) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   await db.delete(expenses).where(and(eq(expenses.id, id), eq(expenses.organizationId, tenant.organizationId)))
   revalidatePath("/expenses")
   revalidatePath("/")

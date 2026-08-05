@@ -9,24 +9,40 @@ import {
   LayoutDashboard,
   ListOrdered,
   Settings,
+  Users,
   Wallet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-const NAV_ITEMS = [
+const OWNER_NAV_ITEMS = [
   { href: "/", label: "Home", icon: LayoutDashboard },
   { href: "/scan", label: "Scan", icon: Camera },
   { href: "/trips", label: "Trips", icon: ListOrdered },
   { href: "/export", label: "Export", icon: FileSpreadsheet },
   { href: "/expenses", label: "Expenses", icon: Wallet },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/drivers", label: "Drivers", icon: Users },
   { href: "/settings", label: "Settings", icon: Settings },
 ]
 
-// Mobile: bottom tab bar (first 5 + settings via home). Desktop: left sidebar.
+// Two tabs, both of them large. A driver is using this one-handed, standing at
+// a gate — everything the owner tier has that a driver has no business seeing
+// is simply absent here rather than shown and then refused.
+const DRIVER_NAV_ITEMS = [
+  { href: "/driver", label: "My trips", icon: ListOrdered },
+  { href: "/driver/scan", label: "Scan", icon: Camera },
+]
+
+// Mobile: bottom tab bar. Desktop: left sidebar.
 export function AppNav() {
   const pathname = usePathname()
   if (pathname.startsWith("/sign-") || pathname.startsWith("/onboarding")) return null
+  // The driver login and the revoked-access screen are both dead ends by
+  // design: there is nowhere for that person to navigate to.
+  if (pathname === "/driver/sign-in" || pathname === "/driver/no-access") return null
+
+  const isDriver = pathname === "/driver" || pathname.startsWith("/driver/")
+  const NAV_ITEMS = isDriver ? DRIVER_NAV_ITEMS : OWNER_NAV_ITEMS
 
   return (
     <>
@@ -68,7 +84,9 @@ export function AppNav() {
         aria-label="Main navigation"
         className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-sidebar/95 backdrop-blur md:hidden"
       >
-        <div className="mx-auto grid max-w-lg grid-cols-7">
+        {/* Column count follows the tier: 8 cramped tabs for the owner, 2 wide
+            ones for a driver. A fixed grid-cols-N class cannot do both. */}
+        <div className="mx-auto grid max-w-lg" style={{ gridTemplateColumns: `repeat(${NAV_ITEMS.length}, minmax(0, 1fr))` }}>
           {NAV_ITEMS.map(({ href, label, icon: Icon }) => (
             <Link
               key={href}

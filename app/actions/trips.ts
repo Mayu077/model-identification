@@ -4,7 +4,7 @@ import { db } from "@/lib/db"
 import { rates, scanJobs, trips } from "@/lib/db/schema"
 import { extractedTripSchema, normalizeContainerNo, tripKindOf, type ExtractedTrip } from "@/lib/domain"
 import { writeAudit } from "@/lib/audit"
-import { requireTenant } from "@/lib/tenant"
+import { actingDriverId, requireOwner, requireTenant } from "@/lib/tenant"
 import { and, asc, between, desc, eq, inArray } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
@@ -19,12 +19,12 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export async function getRates() {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   return db.select().from(rates).where(eq(rates.organizationId, tenant.organizationId)).orderBy(asc(rates.company), asc(rates.direction), asc(rates.tripKind))
 }
 
 export async function updateRate(id: number, newRate: number) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const parsed = z.number().int().positive().max(1_000_000).parse(newRate)
   await db.update(rates).set({ rate: parsed }).where(and(eq(rates.id, id), eq(rates.organizationId, tenant.organizationId)))
   await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "rate.updated", entityType: "rate", entityId: String(id) })
@@ -61,7 +61,12 @@ export type SaveTripInput = ExtractedTrip & z.infer<typeof tripProvenanceSchema>
 
 export interface SaveTripsResult { saved: number; skippedDuplicates: number; errors: string[] }
 export async function saveTrips(rawEntries: SaveTripInput[]): Promise<SaveTripsResult> {
+  // The one write path both tiers share. A driver's rows are stamped with their
+  // driver id, which is what their own dashboard filters on; an owner entering
+  // trips themselves leaves it null. The id comes from the session, never from
+  // the request body — a driver must not be able to file work under someone else.
   const tenant = await requireTenant()
+  const driverId = await actingDriverId(tenant)
   const result: SaveTripsResult = { saved: 0, skippedDuplicates: 0, errors: [] }
   // Only accept a scan job that belongs to this org, so a forged id cannot
   // attach one tenant's trip to another tenant's card image.
@@ -84,7 +89,7 @@ export async function saveTrips(rawEntries: SaveTripInput[]): Promise<SaveTripsR
     const containerNo = normalizeContainerNo(t.containerNo)
     try {
       const rate = await rateFor(tenant.organizationId, t.company, t.direction, t.size, t.tripType)
-      const inserted = await db.insert(trips).values({ organizationId: tenant.organizationId, tripDate: t.tripDate, containerNo, size: t.size, tripType: t.tripType, containerNo2: t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null, fromLocation: t.fromLocation, toLocation: t.toLocation, company: t.company, direction: t.direction, rate, scanJobId, sourceBox }).onConflictDoNothing().returning({ id: trips.id })
+      const inserted = await db.insert(trips).values({ organizationId: tenant.organizationId, tripDate: t.tripDate, containerNo, size: t.size, tripType: t.tripType, containerNo2: t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null, fromLocation: t.fromLocation, toLocation: t.toLocation, company: t.company, direction: t.direction, rate, scanJobId, sourceBox, driverId }).onConflictDoNothing().returning({ id: trips.id })
       if (inserted.length) result.saved += 1
       else result.skippedDuplicates += 1
     } catch (error) { result.errors.push(`${t.containerNo}: ${error instanceof Error ? error.message : "unknown error"}`) }
@@ -95,14 +100,18 @@ export async function saveTrips(rawEntries: SaveTripInput[]): Promise<SaveTripsR
 }
 
 export async function getTrips(from?: string, to?: string) {
-  const tenant = await requireTenant()
+  // Whole-fleet view. Drivers read their own trips through getMyTrips in
+  // app/actions/driver-trips.ts, which cannot return anyone else's.
+  const tenant = await requireOwner()
   const filter = from && to ? and(eq(trips.organizationId, tenant.organizationId), between(trips.tripDate, from, to)) : eq(trips.organizationId, tenant.organizationId)
   return db.select().from(trips).where(filter).orderBy(desc(trips.tripDate), desc(trips.id)).limit(300)
 }
 
 const updateTripSchema = z.object({ tripDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), containerNo: z.string().min(4).max(15), size: z.enum(["40", "20"]), tripType: z.enum(["single", "double"]), containerNo2: z.string().nullable(), fromLocation: z.string().min(2).max(20), toLocation: z.string().min(2).max(20), company: z.enum(["JWC", "JWR"]), direction: z.enum(["EXPORT", "IMPORT"]) })
 export async function updateTrip(id: number, data: z.infer<typeof updateTripSchema>) {
-  const tenant = await requireTenant()
+  // Owner-only. A driver correcting a trip raises a request instead — see
+  // app/actions/driver-trips.ts.
+  const tenant = await requireOwner()
   const t = updateTripSchema.parse(data)
   const rate = await rateFor(tenant.organizationId, t.company, t.direction, t.size, t.tripType)
   try {
@@ -117,7 +126,7 @@ export async function updateTrip(id: number, data: z.infer<typeof updateTripSche
   revalidatePath("/trips"); revalidatePath("/")
 }
 export async function deleteTrip(id: number) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   await db.delete(trips).where(and(eq(trips.id, id), eq(trips.organizationId, tenant.organizationId)))
   await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "trip.deleted", entityType: "trip", entityId: String(id) })
   revalidatePath("/trips"); revalidatePath("/")

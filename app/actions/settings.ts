@@ -3,20 +3,20 @@
 import { db } from "@/lib/db"
 import { settings } from "@/lib/db/schema"
 import { writeAudit } from "@/lib/audit"
-import { requireTenant } from "@/lib/tenant"
+import { requireOwner } from "@/lib/tenant"
 import { IMAGE_RETENTION_SETTING_KEY, parseRetentionDays } from "@/lib/retention"
 import { and, eq, sql } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 export async function getSettings(): Promise<Record<string, string>> {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const rows = await db.select().from(settings).where(eq(settings.organizationId, tenant.organizationId))
   return Object.fromEntries(rows.map((row) => [row.key, row.value]))
 }
 const ALLOWED_KEYS = ["business_name", "business_tagline", "business_address", "business_mobile", "business_email", "gstin", "pan", "invoice_prefix", "invoice_counter", "gst_percent", "bill_to", IMAGE_RETENTION_SETTING_KEY] as const
 export async function updateSetting(key: string, value: string) {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const parsedKey = z.enum(ALLOWED_KEYS).parse(key)
   // Retention drives an irreversible delete, so normalize it here rather than
   // trusting whatever the form posted.
@@ -26,7 +26,7 @@ export async function updateSetting(key: string, value: string) {
   revalidatePath("/settings")
 }
 export async function nextInvoiceNumber() {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const [counter] = await db.update(settings).set({ value: sql`(${settings.value}::int + 1)::text` }).where(and(eq(settings.organizationId, tenant.organizationId), eq(settings.key, "invoice_counter"))).returning({ value: settings.value })
   const [prefix] = await db.select().from(settings).where(and(eq(settings.organizationId, tenant.organizationId), eq(settings.key, "invoice_prefix"))).limit(1)
   await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "invoice.number_claimed", entityType: "invoice" })

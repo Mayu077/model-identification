@@ -3,7 +3,7 @@
 import { db } from "@/lib/db"
 import { expenses, trips } from "@/lib/db/schema"
 import { eq, sql } from "drizzle-orm"
-import { requireTenant } from "@/lib/tenant"
+import { requireOwner } from "@/lib/tenant"
 import { generateBusinessInsights } from "@/lib/ai/extract"
 
 export interface MonthlyStat {
@@ -20,7 +20,7 @@ export interface AnalyticsData {
 }
 
 export async function getAnalytics(): Promise<AnalyticsData> {
-  const tenant = await requireTenant()
+  const tenant = await requireOwner()
   const [incomeRows, expenseRows, expCat, tripCat, totals] = await Promise.all([
     db
       .select({

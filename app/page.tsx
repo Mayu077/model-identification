@@ -6,12 +6,14 @@ import { db } from "@/lib/db"
 import { expenses, trips } from "@/lib/db/schema"
 import { formatDateDDMMYYYY, formatINR } from "@/lib/domain"
 import { desc, eq, sql } from "drizzle-orm"
-import { requireTenant } from "@/lib/tenant"
+import { requireOwner } from "@/lib/tenant"
 
 export const dynamic = "force-dynamic"
 
 export default async function DashboardPage() {
-  const tenant = await requireTenant()
+  // A driver who opens the app lands here first; requireOwner sends them on to
+  // their own dashboard rather than showing them the whole fleet's takings.
+  const tenant = await requireOwner()
   if (!tenant.onboardingCompleted) {
     const { redirect } = await import("next/navigation")
     redirect("/onboarding/setup")
