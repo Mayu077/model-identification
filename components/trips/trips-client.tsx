@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 import { deleteTrip, updateTrip } from "@/app/actions/trips"
 import type { Trip } from "@/lib/db/schema"
-import { billSize, formatDateDDMMYYYY, formatINR, serviceLabel } from "@/lib/domain"
+import { billSize, formatDateDDMMYYYY, formatINR, serviceLabel, tripFraudFlag } from "@/lib/domain"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -24,10 +24,10 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { toast } from "sonner"
-import { Loader2, Pencil, Trash2, X } from "lucide-react"
+import { AlertTriangle, Loader2, Pencil, Trash2, X } from "lucide-react"
 import { useRouter } from "next/navigation"
 
-const CATEGORY_FILTERS = ["ALL", "JWC EXP", "JWC IMP", "JWR EXP", "JWR IMP"] as const
+const CATEGORY_FILTERS = ["ALL", "JWC EXP", "JWC IMP", "JWR EXP", "JWR IMP", "FLAGGED"] as const
 
 export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
   const router = useRouter()
@@ -39,7 +39,11 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
 
   const filtered = useMemo(() => {
     return initialTrips.filter((t) => {
-      if (filter !== "ALL" && serviceLabel(t.company, t.direction) !== filter) return false
+      if (filter === "FLAGGED") {
+        if (!tripFraudFlag(t)) return false
+      } else if (filter !== "ALL" && serviceLabel(t.company, t.direction) !== filter) {
+        return false
+      }
       if (search) {
         const q = search.toUpperCase()
         if (
@@ -53,6 +57,11 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
       return true
     })
   }, [initialTrips, filter, search])
+
+  const flaggedCount = useMemo(
+    () => initialTrips.filter((t) => tripFraudFlag(t) !== null).length,
+    [initialTrips],
+  )
 
   const total = useMemo(() => filtered.reduce((s, t) => s + t.rate, 0), [filtered])
 
@@ -110,8 +119,19 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
             size="sm"
             variant={filter === c ? "default" : "outline"}
             onClick={() => setFilter(c)}
+            className={c === "FLAGGED" && flaggedCount > 0 ? "gap-1.5" : undefined}
           >
-            {c === "ALL" ? "All" : c}
+            {c === "ALL" ? "All" : c === "FLAGGED" ? (
+              <>
+                <AlertTriangle className="size-3.5" aria-hidden />
+                Flagged
+                {flaggedCount > 0 && (
+                  <span className="ml-0.5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold leading-none text-destructive-foreground">
+                    {flaggedCount}
+                  </span>
+                )}
+              </>
+            ) : c}
           </Button>
         ))}
         <Input
@@ -259,51 +279,63 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.map((t) => (
-              <TableRow key={t.id}>
-                <TableCell className="whitespace-nowrap">
-                  {formatDateDDMMYYYY(t.tripDate)}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {t.containerNo}
-                  {t.containerNo2 && (
-                    <>
-                      <br />
-                      {t.containerNo2}
-                    </>
-                  )}
-                </TableCell>
-                <TableCell>{billSize(t.size, t.tripType)}</TableCell>
-                <TableCell>{t.fromLocation}</TableCell>
-                <TableCell>{t.toLocation}</TableCell>
-                <TableCell>
-                  <Badge variant="outline">{serviceLabel(t.company, t.direction)}</Badge>
-                </TableCell>
-                <TableCell className="text-right font-medium">
-                  {formatINR(t.rate)}
-                </TableCell>
-                <TableCell>
-                  <div className="flex justify-end gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => startEdit(t)}
-                      aria-label={`Edit trip ${t.containerNo}`}
-                    >
-                      <Pencil className="size-4" aria-hidden />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleDelete(t.id)}
-                      aria-label={`Delete trip ${t.containerNo}`}
-                    >
-                      <Trash2 className="size-4" aria-hidden />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+            {filtered.map((t) => {
+              const flag = tripFraudFlag(t)
+              return (
+                <TableRow key={t.id} className={flag ? "bg-destructive/5" : undefined}>
+                  <TableCell className="whitespace-nowrap">
+                    <div className="flex items-center gap-1.5">
+                      {flag && (
+                        <AlertTriangle
+                          className="size-3.5 shrink-0 text-destructive"
+                          aria-label={flag}
+                          title={flag}
+                        />
+                      )}
+                      {formatDateDDMMYYYY(t.tripDate)}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {t.containerNo}
+                    {t.containerNo2 && (
+                      <>
+                        <br />
+                        {t.containerNo2}
+                      </>
+                    )}
+                  </TableCell>
+                  <TableCell>{billSize(t.size, t.tripType)}</TableCell>
+                  <TableCell>{t.fromLocation}</TableCell>
+                  <TableCell>{t.toLocation}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{serviceLabel(t.company, t.direction)}</Badge>
+                  </TableCell>
+                  <TableCell className="text-right font-medium">
+                    {formatINR(t.rate)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => startEdit(t)}
+                        aria-label={`Edit trip ${t.containerNo}`}
+                      >
+                        <Pencil className="size-4" aria-hidden />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDelete(t.id)}
+                        aria-label={`Delete trip ${t.containerNo}`}
+                      >
+                        <Trash2 className="size-4" aria-hidden />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
             {filtered.length === 0 && (
               <TableRow>
                 <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
@@ -317,46 +349,56 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
 
       {/* Mobile cards */}
       <div className="flex flex-col gap-2 md:hidden">
-        {filtered.map((t) => (
-          <Card key={t.id}>
-            <CardContent className="flex items-center justify-between gap-3 py-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-mono text-xs font-medium">
-                    {t.containerNo}
-                    {t.containerNo2 ? ` +1` : ""}
-                  </span>
-                  <Badge variant="outline" className="shrink-0">
-                    {serviceLabel(t.company, t.direction)}
-                  </Badge>
+        {filtered.map((t) => {
+          const flag = tripFraudFlag(t)
+          return (
+            <Card key={t.id} className={flag ? "border-destructive/40" : undefined}>
+              <CardContent className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-mono text-xs font-medium">
+                      {t.containerNo}
+                      {t.containerNo2 ? ` +1` : ""}
+                    </span>
+                    <Badge variant="outline" className="shrink-0">
+                      {serviceLabel(t.company, t.direction)}
+                    </Badge>
+                    {flag && (
+                      <AlertTriangle
+                        className="size-3.5 shrink-0 text-destructive"
+                        aria-label={flag}
+                        title={flag}
+                      />
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {formatDateDDMMYYYY(t.tripDate)} · {billSize(t.size, t.tripType)} ·{" "}
+                    {t.fromLocation} → {t.toLocation}
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {formatDateDDMMYYYY(t.tripDate)} · {billSize(t.size, t.tripType)} ·{" "}
-                  {t.fromLocation} → {t.toLocation}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <span className="text-sm font-semibold">{formatINR(t.rate)}</span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => startEdit(t)}
-                  aria-label={`Edit trip ${t.containerNo}`}
-                >
-                  <Pencil className="size-4" aria-hidden />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => handleDelete(t.id)}
-                  aria-label={`Delete trip ${t.containerNo}`}
-                >
-                  <Trash2 className="size-4" aria-hidden />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="text-sm font-semibold">{formatINR(t.rate)}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => startEdit(t)}
+                    aria-label={`Edit trip ${t.containerNo}`}
+                  >
+                    <Pencil className="size-4" aria-hidden />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDelete(t.id)}
+                    aria-label={`Delete trip ${t.containerNo}`}
+                  >
+                    <Trash2 className="size-4" aria-hidden />
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
         {filtered.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
             No trips found. Scan a trip card to get started.

@@ -253,3 +253,41 @@ export function formatDateDDMMYYYY(iso: string): string {
   const [y, m, d] = iso.split("-")
   return `${d}-${m}-${y}`
 }
+
+// ---------- Driver fraud flag ----------
+// A driver-submitted trip is suspicious when:
+//   • tripDate is after the scan submission date   (future trip — not physically possible)
+//   • tripDate is more than LATE_DAYS before createdAt  (very late submission)
+// Owner-entered trips (driverId null) are never flagged — the owner can backfill.
+const FRAUD_LATE_DAYS = 7
+
+export function tripFraudFlag(trip: {
+  tripDate: string
+  createdAt: Date
+  driverId: number | null | bigint
+}): string | null {
+  if (trip.driverId === null || trip.driverId === undefined) return null
+
+  // Parse both sides to UTC midnight so time-of-day doesn't inflate the diff.
+  const tripDay = Date.UTC(
+    Number(trip.tripDate.slice(0, 4)),
+    Number(trip.tripDate.slice(5, 7)) - 1,
+    Number(trip.tripDate.slice(8, 10)),
+  )
+  const submitDay = Date.UTC(
+    trip.createdAt.getUTCFullYear(),
+    trip.createdAt.getUTCMonth(),
+    trip.createdAt.getUTCDate(),
+  )
+
+  const diffDays = (submitDay - tripDay) / 86_400_000 // positive = trip date is in the past
+
+  if (diffDays < 0) {
+    // Trip date is ahead of when the card was scanned — impossible on a real slip.
+    return `Trip date ${formatDateDDMMYYYY(trip.tripDate)} is after this card was scanned`
+  }
+  if (diffDays > FRAUD_LATE_DAYS) {
+    return `Submitted ${Math.round(diffDays)} days after the trip date — verify against the original card`
+  }
+  return null
+}
