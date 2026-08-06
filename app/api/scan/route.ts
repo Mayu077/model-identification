@@ -5,7 +5,7 @@ import { readImageSize } from "@/lib/image-size"
 import { db } from "@/lib/db"
 import { scanJobs, trips } from "@/lib/db/schema"
 import { requireTenantApi } from "@/lib/tenant"
-import { extractTripsFromImage } from "@/lib/ai/extract"
+import { extractTripsFromImage, NoRowsExtracted } from "@/lib/ai/extract"
 import { writeAudit } from "@/lib/audit"
 import { isBlobConfigured, putTripCard } from "@/lib/blob"
 import { retentionExpiryFrom } from "@/lib/retention"
@@ -76,7 +76,13 @@ async function processJob(id: string, organizationId: string, dataUrl: string, b
     // in Blob, and leaving megabytes of data URL in Postgres was pure waste.
     await db.update(scanJobs).set({ status: "succeeded", result: { trips: result }, input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
   } catch (error) {
-    await db.update(scanJobs).set({ status: "failed", errorCode: "EXTRACTION_FAILED", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Extraction failed", input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
+    // A card nobody could read is a different thing from a crash, and the owner
+    // needs different advice for each: one is "send a better photo", the other
+    // is "try again". Keeping them apart also stops the review UI from blaming
+    // the photo when the AI providers were simply all busy.
+    const noRows = error instanceof NoRowsExtracted
+    console.log(`[scan] job ${id} failed (${noRows ? "NO_ROWS_FOUND" : "EXTRACTION_FAILED"}):`, error instanceof Error ? error.message.slice(0, 300) : error)
+    await db.update(scanJobs).set({ status: "failed", errorCode: noRows ? "NO_ROWS_FOUND" : "EXTRACTION_FAILED", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Extraction failed", input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
   }
 }
 
@@ -105,7 +111,11 @@ export async function POST(req: Request) {
   // cannot both revive it.
   let revived = false
   if (!job && selected?.status === "failed") {
-    const [reset] = await db.update(scanJobs).set({ status: "queued", errorCode: null, errorMessage: null, result: null, completedAt: null, attemptCount: 0, updatedAt: new Date() }).where(and(eq(scanJobs.id, selected.id), eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.status, "failed"))).returning()
+    // Dimensions are re-stamped here too. A job created before this route read
+    // them kept null width/height forever through every retry, and without both
+    // numbers the review UI cannot size a row crop and silently falls back to
+    // its magnified mode.
+    const [reset] = await db.update(scanJobs).set({ status: "queued", errorCode: null, errorMessage: null, result: null, completedAt: null, attemptCount: 0, imageWidth: size?.width ?? null, imageHeight: size?.height ?? null, updatedAt: new Date() }).where(and(eq(scanJobs.id, selected.id), eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.status, "failed"))).returning()
     if (reset) {
       selected = reset
       revived = true

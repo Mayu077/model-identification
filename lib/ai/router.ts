@@ -21,31 +21,40 @@ export type TaskType = "vision" | "text" | "reasoning"
 
 type ProviderName = "gemini" | "groq" | "openrouter" | "nvidia"
 
-// Model preference per provider per task. Edit here (or override with env
-// vars AI_MODEL_<PROVIDER>_<TASK>, e.g. AI_MODEL_GEMINI_VISION) when
-// providers release new free models.
-const DEFAULT_MODELS: Record<ProviderName, Partial<Record<TaskType, string>>> =
+// Model preference per provider per task, best first. Edit here (or override
+// with env vars AI_MODEL_<PROVIDER>_<TASK>, comma-separated, e.g.
+// AI_MODEL_GEMINI_VISION) when providers release new free models.
+//
+// Several models are listed per provider because "this model is currently
+// experiencing high demand" is a routine answer from the free Gemini tier —
+// measured at roughly one call in three. That is a property of the MODEL, not
+// of the key, so the useful next move is a sibling model on the same provider,
+// not the same model on another key.
+const DEFAULT_MODELS: Record<ProviderName, Partial<Record<TaskType, string[]>>> =
   {
     gemini: {
-      vision: "gemini-3.5-flash",
-      text: "gemini-3.1-flash-lite",
-      reasoning: "gemini-3.5-flash",
+      // All three verified to answer a trip-card image. gemini-3.1-flash and
+      // gemini-2.5-flash-lite are NOT here on purpose: the first 404s and the
+      // second is closed to new users.
+      vision: ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"],
+      text: ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
+      reasoning: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
     },
     groq: {
       // Groq no longer serves a vision model (llama-4-scout was retired), so
       // it is text/reasoning only — see TASK_PROVIDER_ORDER.vision below.
-      text: "llama-3.3-70b-versatile",
-      reasoning: "qwen/qwen3.6-27b",
+      text: ["llama-3.3-70b-versatile"],
+      reasoning: ["qwen/qwen3.6-27b"],
     },
     openrouter: {
-      vision: "google/gemini-2.5-flash",
-      text: "meta-llama/llama-3.3-70b-instruct:free",
-      reasoning: "qwen/qwen3-coder:free",
+      vision: ["google/gemini-2.5-flash"],
+      text: ["meta-llama/llama-3.3-70b-instruct:free"],
+      reasoning: ["qwen/qwen3-coder:free"],
     },
     nvidia: {
-      vision: "meta/llama-3.2-90b-vision-instruct",
-      text: "meta/llama-3.3-70b-instruct",
-      reasoning: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+      vision: ["meta/llama-3.2-90b-vision-instruct"],
+      text: ["meta/llama-3.3-70b-instruct"],
+      reasoning: ["nvidia/llama-3.3-nemotron-super-49b-v1.5"],
     },
   }
 
@@ -80,10 +89,16 @@ function keysFor(provider: ProviderName): string[] {
   return keys
 }
 
-function modelIdFor(provider: ProviderName, task: TaskType): string | null {
+function modelIdsFor(provider: ProviderName, task: TaskType): string[] {
   const override =
     process.env[`AI_MODEL_${provider.toUpperCase()}_${task.toUpperCase()}`]
-  return override ?? DEFAULT_MODELS[provider][task] ?? null
+  if (override) {
+    return override
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+  }
+  return DEFAULT_MODELS[provider][task] ?? []
 }
 
 function buildModel(
@@ -121,35 +136,53 @@ export interface ModelCandidate {
 export function getCandidates(task: TaskType): ModelCandidate[] {
   const candidates: ModelCandidate[] = []
   for (const provider of TASK_PROVIDER_ORDER[task]) {
-    const modelId = modelIdFor(provider, task)
-    if (!modelId) continue
     const keys = keysFor(provider)
-    keys.forEach((apiKey, keyIndex) => {
-      candidates.push({
-        provider,
-        modelId,
-        keyIndex,
-        model: buildModel(provider, modelId, apiKey),
+    // Model-major within a provider: every key for the best model, then every
+    // key for the next one. Key rotation answers "this key is out of quota";
+    // model rotation answers "this model is busy or gone".
+    for (const modelId of modelIdsFor(provider, task)) {
+      keys.forEach((apiKey, keyIndex) => {
+        candidates.push({
+          provider,
+          modelId,
+          keyIndex,
+          model: buildModel(provider, modelId, apiKey),
+        })
       })
-    })
+    }
   }
   return candidates
 }
 
-function isRetryableError(err: unknown): boolean {
+/**
+ * Thrown by a caller that got a well-formed but useless answer — for trip cards,
+ * a model that replied with zero rows. It is not an API error, so nothing in the
+ * SDK would retry it, but the right move is exactly the same as for an overload:
+ * try a different model.
+ */
+export class RotateToNextModel extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "RotateToNextModel"
+  }
+}
+
+function statusOf(err: unknown): number | undefined {
+  return typeof err === "object" && err !== null && "statusCode" in err
+    ? (err as { statusCode?: number }).statusCode
+    : undefined
+}
+
+/** A failure that belongs to this KEY — the next key for the same model may work. */
+function isKeyLevelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err)
-  const status =
-    typeof err === "object" && err !== null && "statusCode" in err
-      ? (err as { statusCode?: number }).statusCode
-      : undefined
-  if (status && [401, 402, 403, 408, 429, 500, 502, 503, 529].includes(status))
-    return true
+  const status = statusOf(err)
+  if (status && [401, 402, 403, 429].includes(status)) return true
   return (
     msg.includes("rate limit") ||
     msg.includes("too many requests") ||
     msg.includes("quota") ||
     msg.includes("credit") ||
-    msg.includes("overloaded") ||
     msg.includes("unauthorized") ||
     msg.includes("api key") ||
     msg.includes("resource_exhausted") ||
@@ -157,12 +190,38 @@ function isRetryableError(err: unknown): boolean {
   )
 }
 
-// Per-attempt timeout. A 40-row handwritten trip card legitimately takes a
-// vision model 40-90s, and extraction runs inside after() where nobody is
-// waiting on the response — so this is only here to cut off a genuinely hung
-// provider. The old 25s value was shorter than the work itself, which is why
-// large multi-trip cards failed while single printed receipts succeeded.
-const ATTEMPT_TIMEOUT_MS = 90_000
+/**
+ * A failure that belongs to this MODEL — retrying its other keys is a waste, so
+ * the remaining keys are skipped and the next model is tried instead.
+ *
+ * "This model is currently experiencing high demand" is the common one on the
+ * free Gemini tier, and it arrives fast (7-10s), so rotating on it is cheap.
+ * A 404 belongs here too: a model id that has been retired or is closed to new
+ * users will 404 on every key we own.
+ */
+function isModelLevelError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err)
+  const status = statusOf(err)
+  if (err instanceof RotateToNextModel) return true
+  if (status && [400, 404, 408, 500, 502, 503, 529].includes(status)) return true
+  return (
+    msg.includes("timed out") ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("try again later") ||
+    msg.includes("is not found") ||
+    msg.includes("no longer available") ||
+    msg.includes("not supported")
+  )
+}
+
+// Per-attempt timeout. With Gemini's thinking budget set to zero (see
+// lib/ai/extract.ts) a 17-row handwritten card comes back in 10-12s and a full
+// 45-row card in well under a minute, so 60s is generous for the work while
+// still leaving room inside the total budget for several rotations. The old 90s
+// value allowed only two attempts, and the first one it spent was usually on a
+// model that was merely busy.
+const ATTEMPT_TIMEOUT_MS = 60_000
 // Total budget: stay under the scan route's maxDuration so we can still record
 // a real error on the scan_job instead of being killed mid-write.
 const TOTAL_BUDGET_MS = 240_000
@@ -201,28 +260,40 @@ export async function withModelRotation<T>(
   }
   const started = Date.now()
   let lastError: unknown
-  // Candidates are ordered provider-major (every Gemini key, then every
-  // OpenRouter key, ...). A timeout means that MODEL is too slow for this
-  // workload, not that this key is exhausted — so retrying its dozen sibling
-  // keys just burns the budget and the later providers are never reached.
-  // Quota/auth failures are per-key, so those still rotate key by key.
-  const exhaustedProviders = new Set<ProviderName>()
+  let attempts = 0
+  // Candidates are ordered model-major within each provider. A model-level
+  // failure (busy, retired, hung, or answering with nothing) skips that model's
+  // remaining keys, because retrying a dozen sibling keys against a model that
+  // is not going to answer burns the budget and the better fallbacks are never
+  // reached. Quota and auth failures are per-key, so those rotate key by key.
+  const exhaustedModels = new Set<string>()
   for (const candidate of candidates) {
-    if (exhaustedProviders.has(candidate.provider)) continue
+    const modelKey = `${candidate.provider}/${candidate.modelId}`
+    if (exhaustedModels.has(modelKey)) continue
     const remaining = TOTAL_BUDGET_MS - (Date.now() - started)
-    if (remaining < 10_000) break // not enough time for a meaningful attempt
+    if (remaining < 10_000) {
+      console.log(`[ai-router] budget spent after ${attempts} attempt(s), giving up`)
+      break
+    }
+    attempts += 1
     try {
-      return await withTimeout(
+      const value = await withTimeout(
         fn(candidate.model, candidate),
         Math.min(ATTEMPT_TIMEOUT_MS, remaining),
       )
+      if (attempts > 1) {
+        console.log(`[ai-router] succeeded on ${modelKey} key#${candidate.keyIndex + 1} (attempt ${attempts})`)
+      }
+      return value
     } catch (err) {
       lastError = err
-      const timedOut = err instanceof Error && err.message.includes("timed out")
-      if (!timedOut && !isRetryableError(err)) throw err
-      if (timedOut) exhaustedProviders.add(candidate.provider)
+      const modelLevel = isModelLevelError(err)
+      // Anything we cannot classify is a real bug (a schema mismatch, a coding
+      // error) and must surface rather than being retried against every key.
+      if (!modelLevel && !isKeyLevelError(err)) throw err
+      if (modelLevel) exhaustedModels.add(modelKey)
       console.log(
-        `[ai-router] ${candidate.provider}/${candidate.modelId} key#${candidate.keyIndex + 1} failed, rotating${timedOut ? ` past all ${candidate.provider} keys (timeout)` : ""}:`,
+        `[ai-router] ${modelKey} key#${candidate.keyIndex + 1} failed, rotating to next ${modelLevel ? "model" : "key"}:`,
         err instanceof Error ? err.message.slice(0, 200) : err,
       )
     }

@@ -6,7 +6,7 @@ import {
   type ExtractedExpense,
   type ExtractedTrip,
 } from "@/lib/domain"
-import { withModelRotation } from "./router"
+import { RotateToNextModel, withModelRotation } from "./router"
 import { z } from "zod"
 
 const TRIP_EXTRACTION_PROMPT = `You are reading trip documents from an Indian container truck business. The image is ONE of these two document types — identify which first:
@@ -47,7 +47,7 @@ Rules:
 - Dates: the card may show only day/month (e.g. "17/5" or "17-5-26"). Output full ISO dates (YYYY-MM-DD). Current year is ${new Date().getFullYear()} — use it when the year is missing unless context clearly says otherwise.
 - Output dates, sizes and locations EXACTLY in the required format. Never output anything not in the schema.
 
-ROW POSITION (rowTop / rowBottom): for each trip also report where you read it, so the owner can be shown that exact strip of the photo to check against. Use a vertical scale where 0 is the very top edge of the image and 1000 is the very bottom edge. rowTop is the top of that row's band, rowBottom is the bottom. You do NOT need pixel precision and you must NOT do any careful measuring — a rough band that contains the row's handwriting is enough, and a whole-row band is better than a tight one. Requirements: rowTop < rowBottom, and the band should be roughly the height of one row (on a 40-row card each band is about 20-25 units tall; on a card with few rows they are much taller). For a merged continuation line, cover both physical lines in one band. If you genuinely cannot tell where a row sat, set both to null rather than guessing a wrong position — a wrong band is worse than none.`
+ROW POSITION (rowTop / rowBottom): every trip MUST carry both rowTop and rowBottom, reporting where on the image you read it, so the owner can be shown that exact strip of the photo to check against. Use a vertical scale of WHOLE NUMBERS where 0 is the very top edge of the image and 1000 is the very bottom edge — e.g. a row a quarter of the way down is around 250, not 0.25. rowTop is the top of that row's band, rowBottom is the bottom. You do NOT need pixel precision and you must NOT do any careful measuring — a rough band that contains the row's handwriting is enough, and a whole-row band is better than a tight one. Requirements: rowTop < rowBottom, and the band should be roughly the height of one row (on a 40-row card each band is about 20-25 units tall; on a card with few rows they are much taller). For a merged continuation line, cover both physical lines in one band. If you genuinely cannot tell where a row sat, set both to null rather than guessing a wrong position — a wrong band is worse than none.`
 
 /**
  * Where on the card a row was read from, as a fraction (0-1) of image height.
@@ -82,6 +82,15 @@ function toSourceBox(
 ): SourceBox | null {
   if (typeof rowTop !== "number" || typeof rowBottom !== "number") return null
   if (!Number.isFinite(rowTop) || !Number.isFinite(rowBottom)) return null
+  // The prompt asks for a 0-1000 scale, and the model mostly obeys — but it also
+  // answers in plain 0-1 fractions often enough that insisting on one scale threw
+  // away every position on a card and hid the crop preview entirely. Both
+  // describe the same band, so accept either. A real 0-1000 band can never be
+  // this thin (MIN_BAND_UNITS rejects it below), so there is no ambiguity.
+  if (rowTop <= 1 && rowBottom <= 1) {
+    rowTop *= 1000
+    rowBottom *= 1000
+  }
   if (rowTop < 0 || rowBottom > 1000 || rowTop >= rowBottom) return null
   const height = rowBottom - rowTop
   if (height < MIN_BAND_UNITS || height > MAX_BAND_UNITS) return null
@@ -110,13 +119,45 @@ const modelTripSchema = z.object({
   toLocation: z.string(),
   company: z.enum(["JWC", "JWR"]),
   direction: z.enum(["EXPORT", "IMPORT"]),
-  // Vertical band this row was read from, 0-1000 over image height. Nullable so
-  // a model that cannot place a row says so instead of inventing a number.
-  rowTop: z.number().nullable().optional(),
-  rowBottom: z.number().nullable().optional(),
+  // Vertical band this row was read from, 0-1000 over image height. Required
+  // keys with nullable values, NOT optional: when these were optional the faster
+  // models simply left them out — gemini-3.1-flash-lite omitted rowBottom on
+  // every row of a card — and the crop preview silently disappeared for the whole
+  // scan. A required key goes into the provider's response schema, so the model
+  // has to answer; nullable still lets it say "I could not place this row".
+  rowTop: z.number().nullable(),
+  rowBottom: z.number().nullable(),
 })
 
 const modelResultSchema = z.object({ trips: z.array(modelTripSchema) })
+
+/**
+ * Message for the case where every model we could reach read the card and found
+ * nothing on it. Deliberately names the likely cause: the photos that fail this
+ * way are almost always WhatsApp copies, which are re-compressed to 720p, and at
+ * that size a container number is about ten pixels per character.
+ */
+export const NO_ROWS_MESSAGE =
+  "Could not read any trips from this photo. If it reached you over WhatsApp, ask for the original photo instead — WhatsApp shrinks images and the handwriting stops being readable. Otherwise retake it square-on, filling the frame with the card."
+
+export class NoRowsExtracted extends Error {
+  constructor() {
+    super(NO_ROWS_MESSAGE)
+    this.name = "NoRowsExtracted"
+  }
+}
+
+/**
+ * Transcribing a grid is reading, not reasoning, and Gemini's thinking tokens
+ * are pure cost here: measured on a real 17-row card, thinking on took 87-99s
+ * and thinking off took 10-12s, and both produced the same 17 rows with the same
+ * single misread character. The 90s per-attempt ceiling was landing right on top
+ * of the thinking-on figure, which is what made large cards fail while single
+ * printed receipts came back fine.
+ */
+const PROVIDER_OPTIONS = {
+  google: { thinkingConfig: { thinkingBudget: 0 } },
+} as const
 
 export async function extractTripsFromImage(
   imageBase64DataUrl: string,
@@ -129,6 +170,12 @@ export async function extractTripsFromImage(
       // covers thinking tokens. Left at the provider default, a long card gets
       // truncated mid-JSON and fails to parse.
       maxOutputTokens: 16_384,
+      // The router does the retrying. Left at the SDK default of 2, a single
+      // busy model would retry itself three times with backoff — measured at
+      // 264s on one candidate — so the router's own rotation never got a turn
+      // inside the budget and the whole scan failed on one unlucky model.
+      maxRetries: 0,
+      providerOptions: PROVIDER_OPTIONS,
       messages: [
         {
           role: "user",
@@ -139,7 +186,16 @@ export async function extractTripsFromImage(
         },
       ],
     })
+    // An empty array is what the prompt asks for when the image is unreadable,
+    // but it is also what a weak fallback model returns from a card it simply
+    // could not handle. Treat it as a reason to try a different model: the cost
+    // is one fast call, and the alternative is telling the owner their clear
+    // photo was unreadable because the third model in the chain gave up.
+    if (output.trips.length === 0) throw new RotateToNextModel("model returned no trip rows")
     return output
+  }).catch((error: unknown) => {
+    if (error instanceof RotateToNextModel) throw new NoRowsExtracted()
+    throw error
   })
 
   // Now apply the strict schema per row, so one unusable row costs one row.
@@ -148,6 +204,9 @@ export async function extractTripsFromImage(
   const { trips: rawRows } = modelResultSchema.parse(result)
   let droppedRows = 0
   let droppedBoxes = 0
+  // Samples of positions we refused, so a card whose crop previews all vanish can
+  // be diagnosed from the log instead of by re-running the model by hand.
+  const rejectedPositions: string[] = []
   const trips = rawRows.flatMap((row) => {
     // extractedTripSchema strips rowTop/rowBottom (unknown keys), so read the
     // position off the raw row before parsing.
@@ -162,11 +221,17 @@ export async function extractTripsFromImage(
       return []
     }
     const sourceBox = toSourceBox(row.rowTop, row.rowBottom)
-    if (!sourceBox) droppedBoxes += 1
+    if (!sourceBox) {
+      droppedBoxes += 1
+      if (rejectedPositions.length < 3) rejectedPositions.push(`${row.rowTop}..${row.rowBottom}`)
+    }
     const { trip, warnings } = sanitizeExtractedTrip(parsed.data)
     return [{ ...trip, warnings, sourceBox }]
   })
 
+  if (droppedBoxes > 0) {
+    console.log(`[extract] ${droppedBoxes} of ${rawRows.length} row position(s) unusable, e.g. ${rejectedPositions.join(", ")}`)
+  }
   return { trips, droppedRows, droppedBoxes }
 }
 
@@ -190,6 +255,8 @@ export async function extractExpenseFromText(
     const { output } = await generateText({
       model,
       output: Output.object({ schema: expenseResultSchema }),
+      // As above: rotation is the router's job, not the SDK's.
+      maxRetries: 0,
       messages: [
         {
           role: "user",
@@ -215,6 +282,8 @@ export async function extractExpenseFromImage(
     const { output } = await generateText({
       model,
       output: Output.object({ schema: expenseResultSchema }),
+      // As above: rotation is the router's job, not the SDK's.
+      maxRetries: 0,
       messages: [
         {
           role: "user",

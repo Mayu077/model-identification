@@ -58,21 +58,39 @@ export function ScanClient() {
 
   // Phone photos are often 8-15MB which exceeds the server upload limit and
   // caused "Unexpected token" errors (server returned an HTML error page, not
-  // JSON). Resize/compress in the browser before uploading.
-  async function compressImage(file: File): Promise<Blob> {
+  // JSON). Resize in the browser before uploading — but only when there is
+  // something to resize.
+  const MAX_DIM = 2048
+  // Below this on the long edge, a container number is roughly ten pixels per
+  // character and misreads start appearing. A WhatsApp-forwarded photo lands at
+  // 720x1280, which is exactly where this bites.
+  const LOW_RES_DIM = 1400
+
+  async function prepareImage(file: File): Promise<{ blob: Blob; width: number; height: number }> {
     const bitmap = await createImageBitmap(file)
-    const MAX_DIM = 2048
-    const scale = Math.min(1, MAX_DIM / Math.max(bitmap.width, bitmap.height))
+    const { width, height } = bitmap
+    // Re-encoding a photo that is already within bounds throws away detail for
+    // nothing — and it is the small, already-compressed photos that need every
+    // pixel they have left. Only touch the file when it is genuinely too big.
+    if (Math.max(width, height) <= MAX_DIM && file.size <= 6 * 1024 * 1024) {
+      bitmap.close?.()
+      return { blob: file, width, height }
+    }
+    const scale = Math.min(1, MAX_DIM / Math.max(width, height))
     const canvas = document.createElement("canvas")
-    canvas.width = Math.round(bitmap.width * scale)
-    canvas.height = Math.round(bitmap.height * scale)
+    canvas.width = Math.round(width * scale)
+    canvas.height = Math.round(height * scale)
     const ctx = canvas.getContext("2d")
-    if (!ctx) return file
+    if (!ctx) return { blob: file, width, height }
     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    bitmap.close?.()
+    // 0.92 rather than 0.85: this is handwriting, where JPEG ringing around thin
+    // strokes is the difference between a 6 and a 0, and the extra bytes are
+    // nothing next to a 10MB limit.
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.85),
+      canvas.toBlob(resolve, "image/jpeg", 0.92),
     )
-    return blob ?? file
+    return { blob: blob ?? file, width: canvas.width, height: canvas.height }
   }
 
   async function handleFile(file: File) {
@@ -84,7 +102,17 @@ export function ScanClient() {
     try {
       let upload: Blob = file
       try {
-        upload = await compressImage(file)
+        const prepared = await prepareImage(file)
+        upload = prepared.blob
+        if (Math.max(prepared.width, prepared.height) < LOW_RES_DIM) {
+          // Said up front, not after a failed read: the owner can retake the
+          // photo in ten seconds, and finding out at the end of a 40s scan that
+          // the picture was never good enough is the frustrating version.
+          toast.warning(
+            `This photo is only ${prepared.width}×${prepared.height}. Container numbers may be misread — check each row carefully, or send the original photo instead of a WhatsApp copy.`,
+            { duration: 8000 },
+          )
+        }
       } catch {
         // If compression fails (very old browser), fall back to original file
       }
@@ -110,11 +138,12 @@ export function ScanClient() {
       const queued = data as typeof data & { jobId?: string; status?: string }
       if (!queued.jobId) throw new Error("Scan job was not created")
       let job: ScanJobStatus = { status: queued.status ?? "queued" }
-      // A full 40-row handwritten card can take a vision model 60-120s, and the
-      // server allows up to 300s. Polling for only 90s reported "taking longer
-      // than expected" on cards that were still being extracted successfully.
-      for (let attempt = 0; attempt < 160 && ["queued", "processing"].includes(job.status); attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
+      // Extraction is normally 10-20s now that Gemini's thinking budget is off,
+      // but a card that has to rotate through several busy models can still take
+      // a couple of minutes, and the server allows up to 300s. Poll fast at first
+      // so the common case feels immediate, then settle down.
+      for (let attempt = 0; attempt < 170 && ["queued", "processing"].includes(job.status); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 1000 : 2000))
         const statusResponse = await fetch(`/api/scan?id=${encodeURIComponent(queued.jobId)}`, { cache: "no-store" })
         if (statusResponse.redirected || [401, 403].includes(statusResponse.status)) {
           throw new Error("Your session expired while the card was being read — sign in again and the result will still be here.")
