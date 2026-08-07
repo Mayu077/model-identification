@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { toast } from "sonner"
-import { FileSpreadsheet, Loader2, ReceiptText } from "lucide-react"
+import { FileSpreadsheet, Loader2, ReceiptText, FileText } from "lucide-react"
 
 function isoDaysAgo(days: number): string {
   const d = new Date()
@@ -50,9 +50,40 @@ export function ExportClient({ settings }: { settings: Record<string, string> })
       downloadSummaryExcel(previewTrips, from, to)
       const invoiceNo = await nextInvoiceNumber()
       downloadBillExcel(previewTrips, from, to, invoiceNo, settings as unknown as BillSettings)
-      toast.success(`Summary and Bill ${invoiceNo} downloaded`)
+      toast.success(`Summary + Bill ${invoiceNo} downloaded`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Export failed")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handlePdfBill() {
+    if (!previewTrips || previewTrips.length === 0) return
+    setLoading(true)
+    try {
+      const invoiceNo = await nextInvoiceNumber()
+      const res = await fetch("/api/bill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to, invoiceNo }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "PDF generation failed" }))
+        throw new Error(err.error ?? "PDF generation failed")
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `Bill_${invoiceNo.replace(/[/\\:]/g, "-")}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast.success(`Bill ${invoiceNo} downloaded as PDF`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "PDF export failed")
     } finally {
       setLoading(false)
     }
@@ -157,17 +188,33 @@ export function ExportClient({ settings }: { settings: Record<string, string> })
                 </span>
               </div>
             </div>
-            <Button onClick={handleExport} disabled={loading} size="lg" className="w-full">
-              {loading ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
-                <>
-                  <FileSpreadsheet className="size-4" aria-hidden />
-                  <ReceiptText className="size-4" aria-hidden />
-                </>
-              )}
-              Download Summary + Bill
-            </Button>
+            <div className="flex flex-col gap-2">
+              <Button onClick={handleExport} disabled={loading} size="lg" className="w-full">
+                {loading ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <>
+                    <FileSpreadsheet className="size-4" aria-hidden />
+                    <ReceiptText className="size-4" aria-hidden />
+                  </>
+                )}
+                Download Summary + Bill (Excel)
+              </Button>
+              <Button
+                onClick={handlePdfBill}
+                disabled={loading}
+                size="lg"
+                variant="outline"
+                className="w-full"
+              >
+                {loading ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <FileText className="size-4" aria-hidden />
+                )}
+                Download Bill (PDF)
+              </Button>
+            </div>
             <p className="text-center text-xs text-muted-foreground">
               Next invoice no: {settings.invoice_prefix}
               {String(Number.parseInt(settings.invoice_counter ?? "1", 10)).padStart(2, "0")}

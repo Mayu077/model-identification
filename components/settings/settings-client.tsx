@@ -31,7 +31,18 @@ const SETTING_FIELDS: Array<{ key: string; label: string }> = [
   { key: "invoice_prefix", label: "Invoice prefix" },
   { key: "invoice_counter", label: "Next invoice number" },
   { key: "gst_percent", label: "GST % (CGST and SGST each)" },
-  { key: "bill_to", label: "Bill to (customer)" },
+  { key: "bill_to", label: "Bill to (customer name)" },
+  { key: "billing_address", label: "Customer billing address" },
+  { key: "vehicle_number", label: "Vehicle number" },
+]
+
+const BANK_FIELDS: Array<{ key: string; label: string }> = [
+  { key: "bank_account_name", label: "Account name" },
+  { key: "bank_name", label: "Bank name" },
+  { key: "bank_account_no", label: "Account number" },
+  { key: "bank_ifsc", label: "IFSC code" },
+  { key: "bank_branch", label: "Branch" },
+  { key: "authorized_signatory", label: "Authorized signatory name" },
 ]
 
 const EMPTY_PW = { currentPassword: "", newPassword: "", confirmPassword: "" }
@@ -193,6 +204,34 @@ export function SettingsClient({
           <Button onClick={saveSettings} disabled={busy} className="self-end">
             {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
             Save Details
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Bank &amp; signatory (shown on PDF bill)</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {BANK_FIELDS.map((f) => (
+              <div key={f.key} className="flex flex-col gap-1.5">
+                <Label htmlFor={`s-${f.key}`} className="text-xs">
+                  {f.label}
+                </Label>
+                <Input
+                  id={`s-${f.key}`}
+                  value={settingDrafts[f.key] ?? settings[f.key] ?? ""}
+                  onChange={(e) =>
+                    setSettingDrafts((d) => ({ ...d, [f.key]: e.target.value }))
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          <Button onClick={saveSettings} disabled={busy} className="self-end">
+            {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+            Save Bank Details
           </Button>
         </CardContent>
       </Card>

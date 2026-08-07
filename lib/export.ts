@@ -102,6 +102,15 @@ export interface BillSettings {
   pan: string
   gst_percent: string
   bill_to: string
+  // Extra fields used by the PDF bill
+  billing_address?: string
+  vehicle_number?: string
+  bank_account_name?: string
+  bank_name?: string
+  bank_account_no?: string
+  bank_ifsc?: string
+  bank_branch?: string
+  authorized_signatory?: string
 }
 
 /**

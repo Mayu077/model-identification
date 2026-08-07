@@ -16,7 +16,14 @@ export async function getSettings(): Promise<Record<string, string>> {
   const rows = await db.select().from(settings).where(eq(settings.organizationId, tenant.organizationId))
   return Object.fromEntries(rows.map((row) => [row.key, row.value]))
 }
-const ALLOWED_KEYS = ["business_name", "business_tagline", "business_address", "business_mobile", "business_email", "gstin", "pan", "invoice_prefix", "invoice_counter", "gst_percent", "bill_to", IMAGE_RETENTION_SETTING_KEY] as const
+const ALLOWED_KEYS = [
+  "business_name", "business_tagline", "business_address", "business_mobile", "business_email",
+  "gstin", "pan", "invoice_prefix", "invoice_counter", "gst_percent",
+  "bill_to", "billing_address", "vehicle_number",
+  "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch",
+  "authorized_signatory",
+  IMAGE_RETENTION_SETTING_KEY,
+] as const
 export async function updateSetting(key: string, value: string) {
   const tenant = await requireOwner()
   const parsedKey = z.enum(ALLOWED_KEYS).parse(key)
