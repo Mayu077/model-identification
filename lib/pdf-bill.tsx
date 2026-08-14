@@ -201,17 +201,22 @@ export function BillDocument({ trips, from, to, invoiceNo, s: cfg }: PdfBillProp
     <Document>
       <Page size="A4" style={s.page}>
 
-        {/* ── Header ── */}
-        <View style={s.headerWrap}>
-          <Text style={s.bizName}>{cfg.business_name || "RAJESHRI ENTERPRISES"}</Text>
-          <Text style={s.tagline}>{cfg.business_tagline || ""}</Text>
-          <Text style={s.headerMeta}>Address: {cfg.business_address}</Text>
-          <Text style={s.headerMeta}>
-            Mob: {cfg.business_mobile}{"   |   "}Email: {cfg.business_email}
-          </Text>
-        </View>
-
-        <View style={s.divider} />
+        {/* ── Header: uploaded letterhead image, or the typed business details ── */}
+        {cfg.letterhead_url ? (
+          <Image src={cfg.letterhead_url} style={s.letterheadImg} />
+        ) : (
+          <>
+            <View style={s.headerWrap}>
+              <Text style={s.bizName}>{cfg.business_name || "RAJESHRI ENTERPRISES"}</Text>
+              <Text style={s.tagline}>{cfg.business_tagline || ""}</Text>
+              <Text style={s.headerMeta}>Address: {cfg.business_address}</Text>
+              <Text style={s.headerMeta}>
+                Mob: {cfg.business_mobile}{"   |   "}Email: {cfg.business_email}
+              </Text>
+            </View>
+            <View style={s.divider} />
+          </>
+        )}
 
         {/* ── Invoice meta ── */}
         <Text style={s.invoiceTitle}>INVOICE</Text>

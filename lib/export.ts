@@ -103,6 +103,7 @@ export interface BillSettings {
   gst_percent: string
   bill_to: string
   // Extra fields used by the PDF bill
+  letterhead_url?: string
   billing_address?: string
   vehicle_number?: string
   bank_account_name?: string

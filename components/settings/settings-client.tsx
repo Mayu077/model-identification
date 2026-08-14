@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import { Eye, EyeOff, Loader2 } from "lucide-react"
+import { LetterheadCard } from "@/components/settings/letterhead-card"
 
 const KIND_LABELS: Record<string, string> = {
   "40": "40 ft",
@@ -207,6 +208,8 @@ export function SettingsClient({
           </Button>
         </CardContent>
       </Card>
+
+      <LetterheadCard currentUrl={settings.letterhead_url} />
 
       <Card>
         <CardHeader>

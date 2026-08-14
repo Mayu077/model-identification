@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { getTrips } from "@/app/actions/trips"
 import { nextInvoiceNumber } from "@/app/actions/settings"
-import { downloadBillExcel, downloadSummaryExcel, type BillSettings } from "@/lib/export"
+import { downloadBillExcel, type BillSettings } from "@/lib/export"
 import { formatINR, serviceLabel } from "@/lib/domain"
 import type { Trip } from "@/lib/db/schema"
 import { Button } from "@/components/ui/button"
@@ -43,11 +43,35 @@ export function ExportClient({ settings }: { settings: Record<string, string> })
     }
   }
 
+  async function downloadSummary() {
+    const res = await fetch("/api/summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error ?? "Summary generation failed")
+    }
+    const blob = await res.blob()
+    const filename =
+      res.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] ??
+      `Summary_${from}_to_${to}.xlsx`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   async function handleExport() {
     if (!previewTrips || previewTrips.length === 0) return
     setLoading(true)
     try {
-      downloadSummaryExcel(previewTrips, from, to)
+      await downloadSummary()
       const invoiceNo = await nextInvoiceNumber()
       downloadBillExcel(previewTrips, from, to, invoiceNo, settings as unknown as BillSettings)
       toast.success(`Summary + Bill ${invoiceNo} downloaded`)
