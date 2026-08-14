@@ -171,11 +171,11 @@ function statusOf(err: unknown): number | undefined {
     : undefined
 }
 
-/** A failure that belongs to this KEY — the next key for the same model may work. */
+/** A failure that belongs to this KEY/account — the next key for the same model may work. */
 function isKeyLevelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err)
   const status = statusOf(err)
-  if (status && [401, 402, 403, 429].includes(status)) return true
+  if (status && [401, 402, 403, 429, 503].includes(status)) return true
   return (
     msg.includes("rate limit") ||
     msg.includes("too many requests") ||
@@ -184,29 +184,25 @@ function isKeyLevelError(err: unknown): boolean {
     msg.includes("unauthorized") ||
     msg.includes("api key") ||
     msg.includes("resource_exhausted") ||
-    msg.includes("429")
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("try again later") ||
+    msg.includes("429") ||
+    msg.includes("503")
   )
 }
 
 /**
- * A failure that belongs to this MODEL — retrying its other keys is a waste, so
- * the remaining keys are skipped and the next model is tried instead.
- *
- * "This model is currently experiencing high demand" is the common one on the
- * free Gemini tier, and it arrives fast (7-10s), so rotating on it is cheap.
- * A 404 belongs here too: a model id that has been retired or is closed to new
- * users will 404 on every key we own.
+ * A failure that belongs to this MODEL fundamentally (e.g. 404 retired) — retrying
+ * its other keys is a waste, so the remaining keys are skipped and the next model
+ * is tried instead.
  */
 function isModelLevelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err)
   const status = statusOf(err)
   if (err instanceof RotateToNextModel) return true
-  if (status && [400, 404, 408, 500, 502, 503, 529].includes(status)) return true
+  if (status && [400, 404].includes(status)) return true
   return (
-    msg.includes("timed out") ||
-    msg.includes("high demand") ||
-    msg.includes("overloaded") ||
-    msg.includes("try again later") ||
     msg.includes("is not found") ||
     msg.includes("no longer available") ||
     msg.includes("not supported")
