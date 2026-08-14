@@ -52,6 +52,10 @@ export function LetterheadCard({ currentUrl }: { currentUrl?: string }) {
     setBusy(true)
     try {
       const payload = file.type === "application/pdf" ? await pdfFirstPageToPng(file) : file
+      if (payload.type !== "image/png" && payload.type !== "image/jpeg") {
+        toast.error("Please upload a PNG, JPEG, or PDF file")
+        return
+      }
       const body = new FormData()
       body.set("file", payload)
       const res = await fetch("/api/letterhead", { method: "POST", body })
@@ -91,7 +95,7 @@ export function LetterheadCard({ currentUrl }: { currentUrl?: string }) {
       <CardContent className="flex flex-col gap-4">
         <p className="text-sm text-muted-foreground text-pretty">
           Upload your own letterhead and it replaces the typed header at the top of the PDF
-          bill. PNG, JPG, WebP or PDF (first page) up to 4&nbsp;MB. Remove it to fall back to
+          bill. PNG, JPEG or PDF (first page) up to 4&nbsp;MB. Remove it to fall back to
           the business details card above.
         </p>
         {currentUrl && (
@@ -106,7 +110,7 @@ export function LetterheadCard({ currentUrl }: { currentUrl?: string }) {
           <input
             ref={inputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp,application/pdf"
+            accept="image/png,image/jpeg,image/jpg,application/pdf"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0]

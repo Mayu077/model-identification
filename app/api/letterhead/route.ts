@@ -1,18 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireTenantApi } from "@/lib/tenant"
-import { putLetterhead, deleteLetterhead } from "@/lib/blob"
 import { db } from "@/lib/db"
 import { settings } from "@/lib/db/schema"
 import { and, eq } from "drizzle-orm"
 import { writeAudit } from "@/lib/audit"
 
-const ALLOWED_TYPES: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/webp": "webp",
-}
+// ─── Letterhead storage ──────────────────────────────────────────────────────
+// The letterhead is stored as a base64 data URI in the `letterhead_url` setting.
+// We avoid Vercel Blob here because the project's Blob store is configured as
+// private (so `access: "public"` is rejected), and the PDF renderer can't fetch
+// a token-protected URL at render time. A data URI works for both the in-app
+// preview <img> and @react-pdf/renderer's <Image>, with no network fetch needed.
+//
+// The browser already converts PDF first-pages to PNG before upload (see
+// components/settings/letterhead-card.tsx), so the server only ever sees an
+// image file here.
 
+const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/jpg"])
 const MAX_BYTES = 4 * 1024 * 1024 // 4 MB
 
 async function resolveOwner(req: NextRequest) {
@@ -27,7 +31,7 @@ async function resolveOwner(req: NextRequest) {
   }
 }
 
-/** POST /api/letterhead — upload a new letterhead image */
+/** POST /api/letterhead — store a new letterhead image as a data URI */
 export async function POST(req: NextRequest) {
   const { tenant, res: authErr } = await resolveOwner(req)
   if (authErr) return authErr
@@ -38,10 +42,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Multipart field 'file' is required" }, { status: 400 })
   }
 
-  const ext = ALLOWED_TYPES[file.type]
-  if (!ext) {
+  if (!ALLOWED_TYPES.has(file.type)) {
     return NextResponse.json(
-      { error: "Only PNG, JPEG, or WebP images are supported" },
+      { error: "Only PNG or JPEG images are supported (PDFs are converted to PNG in the browser)" },
       { status: 415 },
     )
   }
@@ -52,27 +55,18 @@ export async function POST(req: NextRequest) {
 
   const arrayBuffer = await file.arrayBuffer()
   const body = Buffer.from(arrayBuffer)
+  const dataUri = `data:${file.type};base64,${body.toString("base64")}`
 
-  // Delete old letterhead if one exists
-  const [existing] = await db
-    .select({ value: settings.value })
-    .from(settings)
-    .where(and(eq(settings.organizationId, tenant!.organizationId), eq(settings.key, "letterhead_url")))
-    .limit(1)
-  if (existing?.value) {
-    await deleteLetterhead(existing.value)
-  }
-
-  // Upload new letterhead
-  const url = await putLetterhead(tenant!.organizationId, body, file.type, ext)
-
-  // Persist URL in settings
   await db
     .insert(settings)
-    .values({ organizationId: tenant!.organizationId, key: "letterhead_url", value: url })
+    .values({
+      organizationId: tenant!.organizationId,
+      key: "letterhead_url",
+      value: dataUri,
+    })
     .onConflictDoUpdate({
       target: [settings.organizationId, settings.key],
-      set: { value: url },
+      set: { value: dataUri },
     })
 
   await writeAudit({
@@ -83,7 +77,7 @@ export async function POST(req: NextRequest) {
     entityId: "letterhead_url",
   })
 
-  return NextResponse.json({ url })
+  return NextResponse.json({ ok: true })
 }
 
 /** DELETE /api/letterhead — remove the letterhead */
@@ -91,18 +85,9 @@ export async function DELETE(req: NextRequest) {
   const { tenant, res: authErr } = await resolveOwner(req)
   if (authErr) return authErr
 
-  const [existing] = await db
-    .select({ value: settings.value })
-    .from(settings)
+  await db
+    .delete(settings)
     .where(and(eq(settings.organizationId, tenant!.organizationId), eq(settings.key, "letterhead_url")))
-    .limit(1)
-
-  if (existing?.value) {
-    await deleteLetterhead(existing.value)
-    await db
-      .delete(settings)
-      .where(and(eq(settings.organizationId, tenant!.organizationId), eq(settings.key, "letterhead_url")))
-  }
 
   await writeAudit({
     organizationId: tenant!.organizationId,

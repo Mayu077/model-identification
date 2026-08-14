@@ -53,37 +53,3 @@ export async function deleteTripCards(pathnames: string[]): Promise<void> {
 export function isBlobConfigured(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN)
 }
-
-// ─── Letterhead image ────────────────────────────────────────────────────────
-// Letterheads are stored with public access because @react-pdf/renderer fetches
-// the image by URL at render time — it cannot use a server-side token.
-// The file contains no sensitive data (it's a branded header image).
-
-export function letterheadPath(organizationId: string, ext: string): string {
-  return `letterheads/${organizationId}/letterhead.${ext}`
-}
-
-export async function putLetterhead(
-  organizationId: string,
-  body: Buffer,
-  contentType: string,
-  ext: string,
-): Promise<string> {
-  const pathname = letterheadPath(organizationId, ext)
-  const result = await put(pathname, body, {
-    access: "public",
-    contentType,
-    addRandomSuffix: false,
-    allowOverwrite: true,
-  })
-  // Public blobs return a stable URL; return it directly so we can store it in settings.
-  return result.url
-}
-
-export async function deleteLetterhead(url: string): Promise<void> {
-  try {
-    await del(url)
-  } catch {
-    // Best-effort: if the blob is already gone, ignore the error.
-  }
-}
