@@ -66,7 +66,7 @@ async function processJob(id: string, organizationId: string, dataUrl: string, b
       storeCardImage(id, organizationId, buffer, contentType),
       extractTripsFromImage(dataUrl),
     ])
-    const { trips: extracted, droppedRows, droppedBoxes } = extraction
+    const { trips: extracted, droppedRows, droppedBoxes, modelUsed, provider } = extraction
     if (droppedRows > 0) console.log(`[scan] job ${id}: dropped ${droppedRows} unusable row(s)`)
     if (droppedBoxes > 0) console.log(`[scan] job ${id}: ${droppedBoxes} of ${extracted.length} row(s) had no usable position, crop preview hidden for those`)
     const existing = await db.select({ tripDate: trips.tripDate, containerNo: trips.containerNo }).from(trips).where(eq(trips.organizationId, organizationId))
@@ -74,7 +74,7 @@ async function processJob(id: string, organizationId: string, dataUrl: string, b
     const result = extracted.map((trip) => ({ ...trip, isDuplicate: duplicateSet.has(`${trip.tripDate}|${trip.containerNo}`) }))
     // input (the base64 copy) is still cleared here — the durable copy now lives
     // in Blob, and leaving megabytes of data URL in Postgres was pure waste.
-    await db.update(scanJobs).set({ status: "succeeded", result: { trips: result }, input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
+    await db.update(scanJobs).set({ status: "succeeded", result: { trips: result, modelUsed, provider }, input: {}, updatedAt: new Date(), completedAt: new Date(), leaseExpiresAt: null }).where(and(eq(scanJobs.id, id), eq(scanJobs.organizationId, organizationId)))
   } catch (error) {
     // A card nobody could read is a different thing from a crash, and the owner
     // needs different advice for each: one is "send a better photo", the other

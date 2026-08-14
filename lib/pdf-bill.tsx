@@ -1,4 +1,4 @@
-import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer"
+import { Document, Page, Text, View, StyleSheet, Image } from "@react-pdf/renderer"
 import {
   amountInWords,
   billSize,
@@ -38,7 +38,8 @@ const s = StyleSheet.create({
     paddingHorizontal: 38,
     paddingVertical: 32,
   },
-  // ── header ──
+  // ── letterhead image (when owner uploaded one) ──
+  letterheadImg: { width: "100%", marginBottom: 6 },
   headerWrap: { alignItems: "center", marginBottom: 8 },
   bizName: { fontFamily: "Helvetica-Bold", fontSize: 15, marginBottom: 2 },
   tagline: { fontSize: 8.5, marginBottom: 1 },

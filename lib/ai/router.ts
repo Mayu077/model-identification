@@ -33,12 +33,10 @@ type ProviderName = "gemini" | "groq" | "openrouter" | "nvidia"
 const DEFAULT_MODELS: Record<ProviderName, Partial<Record<TaskType, string[]>>> =
   {
     gemini: {
-      // All three verified to answer a trip-card image. gemini-3.1-flash and
-      // gemini-2.5-flash-lite are NOT here on purpose: the first 404s and the
-      // second is closed to new users.
-      vision: ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"],
-      text: ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
-      reasoning: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+      // Prioritize gemini-3.7-flash, with fallbacks for high demand / rate limits.
+      vision: ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"],
+      text: ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash"],
+      reasoning: ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"],
     },
     groq: {
       // Groq no longer serves a vision model (llama-4-scout was retired), so

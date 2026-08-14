@@ -21,7 +21,7 @@ const ALLOWED_KEYS = [
   "gstin", "pan", "invoice_prefix", "invoice_counter", "gst_percent",
   "bill_to", "billing_address", "vehicle_number",
   "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch",
-  "authorized_signatory",
+  "authorized_signatory", "letterhead_url",
   IMAGE_RETENTION_SETTING_KEY,
 ] as const
 export async function updateSetting(key: string, value: string) {

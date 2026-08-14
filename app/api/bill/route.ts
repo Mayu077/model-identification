@@ -66,8 +66,8 @@ export async function POST(req: NextRequest) {
       from,
       to,
       invoiceNo,
-      s: cfg as Parameters<typeof BillDocument>[0]["s"],
-    }),
+      s: cfg as unknown as Parameters<typeof BillDocument>[0]["s"],
+    }) as Parameters<typeof renderToBuffer>[0],
   )
 
   const filename = `Bill_${invoiceNo.replace(/[/\\:]/g, "-")}.pdf`

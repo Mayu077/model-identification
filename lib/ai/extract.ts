@@ -67,6 +67,8 @@ export interface TripExtractionResult {
   droppedRows: number
   /** Rows whose reported position was missing or implausible and was discarded. */
   droppedBoxes: number
+  modelUsed?: string
+  provider?: string
 }
 
 // Model reports 0-1000 over image height. Anything outside these bounds is a
@@ -162,7 +164,7 @@ const PROVIDER_OPTIONS = {
 export async function extractTripsFromImage(
   imageBase64DataUrl: string,
 ): Promise<TripExtractionResult> {
-  const result = await withModelRotation("vision", async (model) => {
+  const { output, info } = await withModelRotation("vision", async (model, candidateInfo) => {
     const { output } = await generateText({
       model,
       output: Output.object({ schema: modelResultSchema }),
@@ -192,7 +194,7 @@ export async function extractTripsFromImage(
     // is one fast call, and the alternative is telling the owner their clear
     // photo was unreadable because the third model in the chain gave up.
     if (output.trips.length === 0) throw new RotateToNextModel("model returned no trip rows")
-    return output
+    return { output, info: candidateInfo }
   }).catch((error: unknown) => {
     if (error instanceof RotateToNextModel) throw new NoRowsExtracted()
     throw error
@@ -201,7 +203,7 @@ export async function extractTripsFromImage(
   // Now apply the strict schema per row, so one unusable row costs one row.
   // Then sanitize, which is where the ISO 6346 checksum is actually verified
   // (in code, instantly) and surfaced as a warning for human review.
-  const { trips: rawRows } = modelResultSchema.parse(result)
+  const { trips: rawRows } = modelResultSchema.parse(output)
   let droppedRows = 0
   let droppedBoxes = 0
   // Samples of positions we refused, so a card whose crop previews all vanish can
@@ -232,7 +234,13 @@ export async function extractTripsFromImage(
   if (droppedBoxes > 0) {
     console.log(`[extract] ${droppedBoxes} of ${rawRows.length} row position(s) unusable, e.g. ${rejectedPositions.join(", ")}`)
   }
-  return { trips, droppedRows, droppedBoxes }
+  return {
+    trips,
+    droppedRows,
+    droppedBoxes,
+    modelUsed: info.modelId,
+    provider: info.provider,
+  }
 }
 
 const expenseResultSchema = z.object({ expense: extractedExpenseSchema })

@@ -35,7 +35,7 @@ type ScannedTrip = ExtractedTrip & {
 
 interface ScanJobStatus {
   status: string
-  result?: { trips?: ScannedTrip[] }
+  result?: { trips?: ScannedTrip[]; modelUsed?: string; provider?: string }
   errorMessage?: string
   hasImage?: boolean
   imageWidth?: number | null
@@ -49,6 +49,7 @@ export function ScanClient() {
   const [scanning, setScanning] = useState(false)
   const [saving, setSaving] = useState(false)
   const [rows, setRows] = useState<ReviewTrip[] | null>(null)
+  const [modelUsed, setModelUsed] = useState<string | null>(null)
   const [result, setResult] = useState<SaveTripsResult | null>(null)
   // Set once the scan finishes, so each review row can show its own strip of the
   // stored card. Served through /api/scan/image, not the local object URL: the
@@ -156,6 +157,7 @@ export function ScanClient() {
       if (job.status === "failed") throw new Error(job.errorMessage || "Scan extraction failed")
       if (job.status !== "succeeded") throw new Error("Scan is taking longer than expected. You can safely retry.")
       data.trips = job.result?.trips ?? []
+      setModelUsed(job.result?.modelUsed ?? null)
       const trips: ReviewTrip[] = (data.trips ?? []).map((t) => ({
         ...t,
         sourceBox: t.sourceBox ?? null,
@@ -220,6 +222,7 @@ export function ScanClient() {
         setRows(null)
         setPreview(null)
         setCard(null)
+        setModelUsed(null)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Save failed")
@@ -251,20 +254,26 @@ export function ScanClient() {
               </>
             ) : (
               <>
-                <div className="flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  <ScanLine className="size-7" aria-hidden />
+                <div className="rounded-full bg-primary/10 p-4 text-primary">
+                  <Upload className="size-8" aria-hidden />
                 </div>
-                <p className="max-w-sm text-center text-sm text-muted-foreground text-pretty">
-                  Take a photo or upload an image of the driver&apos;s trip card
-                </p>
-                <div className="flex flex-wrap justify-center gap-3">
-                  <Button onClick={() => cameraInputRef.current?.click()}>
-                    <Camera className="size-4" aria-hidden />
+                <div className="text-center">
+                  <p className="font-medium">Upload trip card photo</p>
+                  <p className="text-sm text-muted-foreground">
+                    Take a clear, well-lit photo of the handwritten card or terminal receipt
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <Button
+                    variant="outline"
+                    onClick={() => cameraInputRef.current?.click()}
+                  >
+                    <Camera className="mr-2 size-4" aria-hidden />
                     Take Photo
                   </Button>
-                  <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
-                    <Upload className="size-4" aria-hidden />
-                    Upload Image
+                  <Button onClick={() => fileInputRef.current?.click()}>
+                    <Upload className="mr-2 size-4" aria-hidden />
+                    Choose File
                   </Button>
                 </div>
                 <input
@@ -273,7 +282,7 @@ export function ScanClient() {
                   accept="image/*"
                   capture="environment"
                   className="sr-only"
-                  aria-label="Take photo of trip card"
+                  aria-label="Take photo with camera"
                   onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
                 />
                 <input
@@ -294,13 +303,20 @@ export function ScanClient() {
       {rows && (
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-muted-foreground">
-              {rows.length} entries found ·{" "}
-              <span className="text-foreground font-medium">
-                {rows.filter((r) => r.include).length} selected
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span>
+                {rows.length} entries found ·{" "}
+                <span className="text-foreground font-medium">
+                  {rows.filter((r) => r.include).length} selected
+                </span>
+                {rows.some((r) => r.isDuplicate) && (
+                  <> · {rows.filter((r) => r.isDuplicate).length} duplicates flagged</>
+                )}
               </span>
-              {rows.some((r) => r.isDuplicate) && (
-                <> · {rows.filter((r) => r.isDuplicate).length} duplicates flagged</>
+              {modelUsed && (
+                <Badge variant="outline" className="font-mono text-xs font-normal border-primary/30 text-primary bg-primary/5">
+                  AI: {modelUsed}
+                </Badge>
               )}
             </div>
             <div className="flex gap-2">
@@ -310,6 +326,7 @@ export function ScanClient() {
                   setRows(null)
                   setPreview(null)
                   setCard(null)
+                  setModelUsed(null)
                 }}
               >
                 Rescan

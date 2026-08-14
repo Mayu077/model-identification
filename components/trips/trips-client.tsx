@@ -286,11 +286,12 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
                   <TableCell className="whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
                       {flag && (
-                        <AlertTriangle
-                          className="size-3.5 shrink-0 text-destructive"
-                          aria-label={flag}
-                          title={flag}
-                        />
+                        <span title={flag} className="inline-flex items-center">
+                          <AlertTriangle
+                            className="size-3.5 shrink-0 text-destructive"
+                            aria-label={flag}
+                          />
+                        </span>
                       )}
                       {formatDateDDMMYYYY(t.tripDate)}
                     </div>
@@ -364,11 +365,12 @@ export function TripsClient({ initialTrips }: { initialTrips: Trip[] }) {
                       {serviceLabel(t.company, t.direction)}
                     </Badge>
                     {flag && (
-                      <AlertTriangle
-                        className="size-3.5 shrink-0 text-destructive"
-                        aria-label={flag}
-                        title={flag}
-                      />
+                      <span title={flag} className="inline-flex items-center">
+                        <AlertTriangle
+                          className="size-3.5 shrink-0 text-destructive"
+                          aria-label={flag}
+                        />
+                      </span>
                     )}
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
