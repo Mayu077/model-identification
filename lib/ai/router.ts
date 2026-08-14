@@ -33,10 +33,12 @@ type ProviderName = "gemini" | "groq" | "openrouter" | "nvidia"
 const DEFAULT_MODELS: Record<ProviderName, Partial<Record<TaskType, string[]>>> =
   {
     gemini: {
-      // Prioritize gemini-3.7-flash, with fallbacks for high demand / rate limits.
-      vision: ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"],
-      text: ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash"],
-      reasoning: ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"],
+      // All three verified to answer a trip-card image. gemini-3.1-flash and
+      // gemini-2.5-flash-lite are NOT here on purpose: the first 404s and the
+      // second is closed to new users.
+      vision: ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"],
+      text: ["gemini-3.1-flash-lite", "gemini-3.5-flash"],
+      reasoning: ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
     },
     groq: {
       // Groq no longer serves a vision model (llama-4-scout was retired), so
@@ -171,11 +173,11 @@ function statusOf(err: unknown): number | undefined {
     : undefined
 }
 
-/** A failure that belongs to this KEY/account — the next key for the same model may work. */
+/** A failure that belongs to this KEY — the next key for the same model may work. */
 function isKeyLevelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err)
   const status = statusOf(err)
-  if (status && [401, 402, 403, 429, 503].includes(status)) return true
+  if (status && [401, 402, 403, 429].includes(status)) return true
   return (
     msg.includes("rate limit") ||
     msg.includes("too many requests") ||
@@ -184,25 +186,29 @@ function isKeyLevelError(err: unknown): boolean {
     msg.includes("unauthorized") ||
     msg.includes("api key") ||
     msg.includes("resource_exhausted") ||
-    msg.includes("high demand") ||
-    msg.includes("overloaded") ||
-    msg.includes("try again later") ||
-    msg.includes("429") ||
-    msg.includes("503")
+    msg.includes("429")
   )
 }
 
 /**
- * A failure that belongs to this MODEL fundamentally (e.g. 404 retired) — retrying
- * its other keys is a waste, so the remaining keys are skipped and the next model
- * is tried instead.
+ * A failure that belongs to this MODEL — retrying its other keys is a waste, so
+ * the remaining keys are skipped and the next model is tried instead.
+ *
+ * "This model is currently experiencing high demand" is the common one on the
+ * free Gemini tier, and it arrives fast (7-10s), so rotating on it is cheap.
+ * A 404 belongs here too: a model id that has been retired or is closed to new
+ * users will 404 on every key we own.
  */
 function isModelLevelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err)
   const status = statusOf(err)
   if (err instanceof RotateToNextModel) return true
-  if (status && [400, 404].includes(status)) return true
+  if (status && [400, 404, 408, 500, 502, 503, 529].includes(status)) return true
   return (
+    msg.includes("timed out") ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("try again later") ||
     msg.includes("is not found") ||
     msg.includes("no longer available") ||
     msg.includes("not supported")
