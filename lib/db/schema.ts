@@ -140,9 +140,18 @@ export const auditLogs = pgTable("audit_logs", {
   actorUserId: text("actor_user_id"), action: text("action").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id"), metadata: jsonb("metadata").notNull().default({}), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 export const scanJobs = pgTable("scan_jobs", {
-  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), createdByUserId: text("created_by_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  id: text("id").primaryKey(), organizationId: text("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), createdByUserId: text("created_by_user_id").references(() => user.id, { onDelete: "set null" }),
   status: text("status").notNull(), input: jsonb("input").notNull().default({}), result: jsonb("result"), errorCode: text("error_code"), errorMessage: text("error_message"), attemptCount: integer("attempt_count").notNull().default(0),
   idempotencyKey: text("idempotency_key").notNull(), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(), completedAt: timestamp("completed_at", { withTimezone: true }),
+  // Driver uploads stop at `uploaded`; only an owner can start extraction. These
+  // fields keep the request context and attribution through the normal scan job.
+  driverId: bigint("driver_id", { mode: "number" }).references(() => drivers.id, { onDelete: "set null" }),
+  submittedByName: text("submitted_by_name"),
+  documentType: text("document_type"),
+  requestedTripDate: date("requested_trip_date"),
+  requestNotes: text("request_notes"),
+  reviewedByUserId: text("reviewed_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   // The uploaded card is kept in Vercel Blob (see lib/blob.ts) so the review UI
   // can show each row's own strip of the photo. `input` still holds the base64
   // only until extraction finishes, then it is cleared; imagePath outlives it.
@@ -153,7 +162,10 @@ export const scanJobs = pgTable("scan_jobs", {
   imageExpiresAt: timestamp("image_expires_at", { withTimezone: true }),
 }, (t) => [
   unique("scan_jobs_organization_id_idempotency_key_key").on(t.organizationId, t.idempotencyKey),
-  check("scan_jobs_status_check", sql`status = ANY (ARRAY['queued'::text, 'processing'::text, 'succeeded'::text, 'failed'::text])`),
+  check("scan_jobs_status_check", sql`status = ANY (ARRAY['uploaded'::text, 'queued'::text, 'processing'::text, 'succeeded'::text, 'failed'::text, 'completed'::text, 'rejected'::text])`),
+  check("scan_jobs_document_type_check", sql`document_type IS NULL OR document_type = ANY (ARRAY['receipt'::text, 'trip_card'::text])`),
+  index("scan_jobs_organization_id_status_created_at_idx").on(t.organizationId, t.status, t.createdAt),
+  index("scan_jobs_organization_id_driver_id_created_at_idx").on(t.organizationId, t.driverId, t.createdAt),
 ])
 // Bookkeeping for hand-written data migrations (e.g. scripts/import-legacy.mjs),
 // separate from drizzle-kit's own __drizzle_migrations ledger.
@@ -166,5 +178,6 @@ export type NewTrip = typeof trips.$inferInsert
 export type Rate = typeof rates.$inferSelect
 export type Driver = typeof drivers.$inferSelect
 export type TripChangeRequest = typeof tripChangeRequests.$inferSelect
+export type ScanJob = typeof scanJobs.$inferSelect
 export type Expense = typeof expenses.$inferSelect
 export type NewExpense = typeof expenses.$inferInsert

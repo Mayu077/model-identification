@@ -1,4 +1,4 @@
-import { and, inArray, isNotNull, lt } from "drizzle-orm"
+import { and, inArray, isNotNull, lt, sql } from "drizzle-orm"
 import { db } from "@/lib/db"
 import { scanJobs } from "@/lib/db/schema"
 import { deleteTripCards, isBlobConfigured } from "@/lib/blob"
@@ -36,7 +36,7 @@ export async function GET(req: Request) {
   }
 
   const expired = await db
-    .select({ id: scanJobs.id, imagePath: scanJobs.imagePath })
+    .select({ id: scanJobs.id, imagePath: scanJobs.imagePath, status: scanJobs.status })
     .from(scanJobs)
     // A null image_expires_at means retention is disabled for that org, so those
     // rows are skipped rather than treated as already-due.
@@ -60,7 +60,13 @@ export async function GET(req: Request) {
 
   await db
     .update(scanJobs)
-    .set({ imagePath: null, imageExpiresAt: null, updatedAt: new Date() })
+    .set({
+      imagePath: null,
+      imageExpiresAt: null,
+      status: sql`case when ${scanJobs.status} in ('uploaded', 'succeeded', 'failed') then 'rejected' else ${scanJobs.status} end`,
+      errorMessage: sql`case when ${scanJobs.status} in ('uploaded', 'succeeded', 'failed') then 'Image expired before owner review' else ${scanJobs.errorMessage} end`,
+      updatedAt: new Date(),
+    })
     .where(inArray(scanJobs.id, expired.map((row) => row.id)))
 
   return Response.json({ purged: expired.length, remaining: expired.length === BATCH_SIZE })

@@ -1,12 +1,12 @@
 "use server"
 
 import { randomBytes } from "node:crypto"
-import { and, asc, count, eq, sql } from "drizzle-orm"
+import { and, asc, count, eq, inArray, sql } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
-import { account, drivers, memberships, session, trips, user } from "@/lib/db/schema"
+import { account, drivers, memberships, scanJobs, session, trips, user } from "@/lib/db/schema"
 import { writeAudit } from "@/lib/audit"
 import { requireOwner } from "@/lib/tenant"
 import { driverPasswordSchema, suggestDriverPassword, usernameSchema, usernameToEmail } from "@/lib/driver-auth"
@@ -197,9 +197,15 @@ export async function deleteDriver(driverId: number) {
     .where(and(eq(drivers.id, driverId), eq(drivers.organizationId, tenant.organizationId)))
     .limit(1)
   if (!driver) throw new Error("Driver not found")
-  const [{ value: tripCount }] = await db.select({ value: count() }).from(trips).where(eq(trips.driverId, driverId))
+  const [[{ value: tripCount }], [{ value: openUploadCount }]] = await Promise.all([
+    db.select({ value: count() }).from(trips).where(eq(trips.driverId, driverId)),
+    db.select({ value: count() }).from(scanJobs).where(and(eq(scanJobs.driverId, driverId), inArray(scanJobs.status, ["uploaded", "queued", "processing", "succeeded", "failed"]))),
+  ])
   if (tripCount > 0) {
     throw new Error(`${tripCount} trip(s) are recorded against this driver. Turn their access off instead of deleting them.`)
+  }
+  if (openUploadCount > 0) {
+    throw new Error(`${openUploadCount} upload request(s) are still open for this driver. Handle them before deleting the driver.`)
   }
 
   await db.delete(drivers).where(and(eq(drivers.id, driverId), eq(drivers.organizationId, tenant.organizationId)))

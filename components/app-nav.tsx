@@ -30,7 +30,7 @@ const OWNER_NAV_ITEMS = [
 // is simply absent here rather than shown and then refused.
 const DRIVER_NAV_ITEMS = [
   { href: "/driver", label: "My trips", icon: ListOrdered },
-  { href: "/driver/scan", label: "Scan", icon: Camera },
+  { href: "/driver/upload", label: "Upload", icon: Camera },
 ]
 
 // Mobile: bottom tab bar. Desktop: left sidebar.

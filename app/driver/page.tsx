@@ -1,3 +1,5 @@
+import Link from "next/link"
+import { Upload } from "lucide-react"
 import { getMyTrips } from "@/app/actions/driver-trips"
 import { DriverTripsClient } from "@/components/driver/driver-trips-client"
 import { SignOutButton } from "@/components/sign-out-button"
@@ -20,6 +22,10 @@ export default async function DriverHomePage() {
         </div>
         <SignOutButton redirectTo="/driver/sign-in" />
       </header>
+      <Link href="/driver/upload" className="mb-5 flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90">
+        <Upload className="size-5" aria-hidden />
+        Upload trip card or receipt
+      </Link>
       <DriverTripsClient trips={trips} />
     </main>
   )

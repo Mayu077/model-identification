@@ -13,9 +13,9 @@ import { getTripCard } from "@/lib/blob"
  * browser, so knowing a job id gets you nothing without a session in that org.
  */
 export async function GET(_req: Request, { params }: { params: Promise<{ jobId: string }> }) {
-  let organizationId: string
+  let tenant: Awaited<ReturnType<typeof requireTenantApi>>
   try {
-    ;({ organizationId } = await requireTenantApi())
+    tenant = await requireTenantApi()
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unauthorized"
     return Response.json({ error: message }, { status: message === "Unauthorized" ? 401 : 403 })
@@ -23,12 +23,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ jobId: 
 
   const { jobId } = await params
   const [job] = await db
-    .select({ imagePath: scanJobs.imagePath })
+    .select({ imagePath: scanJobs.imagePath, driverId: scanJobs.driverId })
     .from(scanJobs)
-    // Scoped by organization, so a job id from another tenant reads as missing.
-    .where(and(eq(scanJobs.id, jobId), eq(scanJobs.organizationId, organizationId)))
+    // Owners can review the org queue. Drivers may only see their own uploads.
+    .where(and(eq(scanJobs.id, jobId), eq(scanJobs.organizationId, tenant.organizationId)))
     .limit(1)
-  if (!job?.imagePath) return Response.json({ error: "No image for this scan" }, { status: 404 })
+  if (!job?.imagePath || (tenant.role === "driver" && job.driverId !== tenant.driverId)) {
+    return Response.json({ error: "No image for this scan" }, { status: 404 })
+  }
 
   const blob = await getTripCard(job.imagePath)
   // Null once retention has purged the image, which is expected, not an error.
@@ -43,8 +45,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ jobId: 
       // Private: the response is tied to one org's session, so it must never be
       // held by a shared cache. immutable because the object never changes once
       // written — the browser can reuse it across all 40 row crops on a card.
-      "Cache-Control": "private, max-age=3600, immutable",
+      "Cache-Control": "private, no-store",
       "Content-Disposition": "inline",
+      "X-Content-Type-Options": "nosniff",
     },
   })
 }

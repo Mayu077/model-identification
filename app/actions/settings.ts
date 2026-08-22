@@ -1,8 +1,9 @@
 "use server"
 
 import { db } from "@/lib/db"
-import { account, session, settings } from "@/lib/db/schema"
+import { account, auditLogs, session, settings } from "@/lib/db/schema"
 import { writeAudit } from "@/lib/audit"
+import { DRIVER_PAY_SETTING_KEYS, driverPaySettingsSchema, type DriverPaySettingsInput } from "@/lib/driver-pay"
 import { requireOwner } from "@/lib/tenant"
 import { auth } from "@/lib/auth"
 import { IMAGE_RETENTION_SETTING_KEY, parseRetentionDays } from "@/lib/retention"
@@ -34,6 +35,35 @@ export async function updateSetting(key: string, value: string) {
   await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "setting.updated", entityType: "setting", entityId: parsedKey })
   revalidatePath("/settings")
 }
+
+export async function updateDriverPaySettings(input: DriverPaySettingsInput) {
+  const tenant = await requireOwner()
+  const parsed = driverPaySettingsSchema.parse(input)
+
+  await db.transaction(async (tx) => {
+    for (const key of DRIVER_PAY_SETTING_KEYS) {
+      await tx
+        .insert(settings)
+        .values({ organizationId: tenant.organizationId, key, value: String(parsed[key]) })
+        .onConflictDoUpdate({
+          target: [settings.organizationId, settings.key],
+          set: { value: String(parsed[key]) },
+        })
+    }
+    await tx.insert(auditLogs).values({
+      organizationId: tenant.organizationId,
+      actorUserId: tenant.user.id,
+      action: "driver_pay.updated",
+      entityType: "setting_group",
+      entityId: "driver_pay",
+      metadata: { keys: DRIVER_PAY_SETTING_KEYS },
+    })
+  })
+
+  revalidatePath("/settings")
+  revalidatePath("/")
+}
+
 export async function nextInvoiceNumber() {
   const tenant = await requireOwner()
   const [counter] = await db.update(settings).set({ value: sql`(${settings.value}::int + 1)::text` }).where(and(eq(settings.organizationId, tenant.organizationId), eq(settings.key, "invoice_counter"))).returning({ value: settings.value })

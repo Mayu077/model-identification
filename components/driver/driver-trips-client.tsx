@@ -93,7 +93,7 @@ export function DriverTripsClient({ trips }: { trips: DriverTrip[] }) {
     return (
       <Card>
         <CardContent className="py-10 text-center text-sm text-muted-foreground">
-          No trips yet. Tap Scan to send in your first trip card.
+          No trips yet. Tap Upload to send a trip card or receipt to the owner.
         </CardContent>
       </Card>
     )

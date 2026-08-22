@@ -29,6 +29,13 @@
       "when": 1785916889269,
       "tag": "0003_driver_tier",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787379985541,
+      "tag": "0004_driver_upload_requests",
+      "breakpoints": true
     }
   ]
 }

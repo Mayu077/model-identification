@@ -3,6 +3,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { db } from "@/lib/db"
 import { auditLogs, memberships, organizations, ownerInvites, rates, settings } from "@/lib/db/schema"
+import { RAJESHRI_DRIVER_PAY_DEFAULTS } from "@/lib/driver-pay"
 import { requireUser } from "@/lib/tenant"
 import { and, eq, gt, isNull } from "drizzle-orm"
 import { redirect } from "next/navigation"
@@ -30,6 +31,9 @@ export async function claimOrganization(inviteCode?: string) {
     await db.transaction(async (tx) => {
       await tx.insert(organizations).values({ id: LEGACY_ORGANIZATION_ID, name: "Rajeshri Enterprises", slug: "rajeshri-enterprises-legacy", onboardingCompleted: true, isLegacy: true }).onConflictDoNothing()
       await tx.insert(memberships).values({ organizationId: LEGACY_ORGANIZATION_ID, userId: currentUser.id, role: "owner" }).onConflictDoNothing()
+      for (const [key, value] of Object.entries(RAJESHRI_DRIVER_PAY_DEFAULTS)) {
+        await tx.insert(settings).values({ organizationId: LEGACY_ORGANIZATION_ID, key, value: String(value) }).onConflictDoNothing()
+      }
       await tx.insert(auditLogs).values({ organizationId: LEGACY_ORGANIZATION_ID, actorUserId: currentUser.id, action: "organization.claimed", entityType: "organization", entityId: LEGACY_ORGANIZATION_ID, metadata: { method: "bootstrap_email" } })
     })
     redirect("/")

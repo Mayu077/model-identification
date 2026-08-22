@@ -4,7 +4,7 @@ import { db } from "@/lib/db"
 import { rates, scanJobs, trips } from "@/lib/db/schema"
 import { extractedTripSchema, normalizeContainerNo, tripKindOf, type ExtractedTrip } from "@/lib/domain"
 import { writeAudit } from "@/lib/audit"
-import { actingDriverId, requireOwner, requireTenant } from "@/lib/tenant"
+import { requireOwner, requireTenant } from "@/lib/tenant"
 import { and, asc, between, desc, eq, inArray } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
@@ -61,41 +61,44 @@ export type SaveTripInput = ExtractedTrip & z.infer<typeof tripProvenanceSchema>
 
 export interface SaveTripsResult { saved: number; skippedDuplicates: number; errors: string[] }
 export async function saveTrips(rawEntries: SaveTripInput[]): Promise<SaveTripsResult> {
-  // The one write path both tiers share. A driver's rows are stamped with their
-  // driver id, which is what their own dashboard filters on; an owner entering
-  // trips themselves leaves it null. The id comes from the session, never from
-  // the request body — a driver must not be able to file work under someone else.
-  const tenant = await requireTenant()
-  const driverId = await actingDriverId(tenant)
+  // Drivers submit images only. The owner reviews and saves the extracted rows,
+  // while attribution comes from the server-owned scan job rather than a client
+  // field, so one driver can never file work under another driver's name.
+  const tenant = await requireOwner()
   const result: SaveTripsResult = { saved: 0, skippedDuplicates: 0, errors: [] }
-  // Only accept a scan job that belongs to this org, so a forged id cannot
-  // attach one tenant's trip to another tenant's card image.
   const claimedJobIds = [...new Set(rawEntries.map((e) => e.scanJobId).filter((id): id is string => typeof id === "string" && id.length > 0))]
-  const ownedJobIds = new Set(
-    claimedJobIds.length === 0
+  const ownedJobs = new Map(
+    (claimedJobIds.length === 0
       ? []
-      : (await db.select({ id: scanJobs.id }).from(scanJobs).where(and(eq(scanJobs.organizationId, tenant.organizationId), inArray(scanJobs.id, claimedJobIds)))).map((row) => row.id),
+      : await db.select({ id: scanJobs.id, driverId: scanJobs.driverId, requestNotes: scanJobs.requestNotes, status: scanJobs.status }).from(scanJobs).where(and(eq(scanJobs.organizationId, tenant.organizationId), inArray(scanJobs.id, claimedJobIds)))
+    ).map((job) => [job.id, job]),
   )
   for (const raw of rawEntries) {
     const parsed = extractedTripSchema.safeParse(raw)
     if (!parsed.success) { result.errors.push(`${raw.containerNo ?? "?"}: invalid data`); continue }
     const t = parsed.data
     const provenance = tripProvenanceSchema.safeParse(raw)
-    const scanJobId = provenance.success && provenance.data.scanJobId && ownedJobIds.has(provenance.data.scanJobId) ? provenance.data.scanJobId : null
-    // A box is only meaningful next to the card it was measured on.
+    const claimedJob = provenance.success && provenance.data.scanJobId ? ownedJobs.get(provenance.data.scanJobId) : null
+    const scanJobId = claimedJob?.status === "succeeded" ? claimedJob.id : null
+    // A box is only meaningful next to a successfully reviewed scan.
     const sourceBox = scanJobId && provenance.success ? (provenance.data.sourceBox ?? null) : null
+    const driverId = scanJobId ? (claimedJob?.driverId ?? null) : null
+    const notes = scanJobId ? (claimedJob?.requestNotes ?? null) : null
     // Normalize server-side too. saveTrips is a public server action, and
     // trips_unique_entry only dedupes if container numbers arrive in one form.
     const containerNo = normalizeContainerNo(t.containerNo)
     try {
       const rate = await rateFor(tenant.organizationId, t.company, t.direction, t.size, t.tripType)
-      const inserted = await db.insert(trips).values({ organizationId: tenant.organizationId, tripDate: t.tripDate, containerNo, size: t.size, tripType: t.tripType, containerNo2: t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null, fromLocation: t.fromLocation, toLocation: t.toLocation, company: t.company, direction: t.direction, rate, scanJobId, sourceBox, driverId }).onConflictDoNothing().returning({ id: trips.id })
+      const inserted = await db.insert(trips).values({ organizationId: tenant.organizationId, tripDate: t.tripDate, containerNo, size: t.size, tripType: t.tripType, containerNo2: t.containerNo2 ? normalizeContainerNo(t.containerNo2) : null, fromLocation: t.fromLocation, toLocation: t.toLocation, company: t.company, direction: t.direction, rate, notes, scanJobId, sourceBox, driverId }).onConflictDoNothing().returning({ id: trips.id })
       if (inserted.length) result.saved += 1
       else result.skippedDuplicates += 1
     } catch (error) { result.errors.push(`${t.containerNo}: ${error instanceof Error ? error.message : "unknown error"}`) }
   }
-  await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "trips.imported", entityType: "trip", metadata: { savedCount: result.saved, skippedCount: result.skippedDuplicates } })
-  revalidatePath("/trips"); revalidatePath("/")
+  if (result.errors.length === 0 && claimedJobIds.length > 0) {
+    await db.update(scanJobs).set({ status: "completed", reviewedByUserId: tenant.user.id, reviewedAt: new Date(), updatedAt: new Date() }).where(and(eq(scanJobs.organizationId, tenant.organizationId), eq(scanJobs.status, "succeeded"), inArray(scanJobs.id, claimedJobIds)))
+  }
+  await writeAudit({ organizationId: tenant.organizationId, actorUserId: tenant.user.id, action: "trips.imported", entityType: "trip", metadata: { savedCount: result.saved, skippedCount: result.skippedDuplicates, scanJobIds: claimedJobIds } })
+  revalidatePath("/trips"); revalidatePath("/"); revalidatePath("/scan"); revalidatePath("/driver"); revalidatePath("/driver/upload")
   return result
 }
 

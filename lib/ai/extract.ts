@@ -163,7 +163,13 @@ const PROVIDER_OPTIONS = {
 
 export async function extractTripsFromImage(
   imageBase64DataUrl: string,
+  documentType?: "receipt" | "trip_card" | null,
 ): Promise<TripExtractionResult> {
+  const documentInstruction = documentType === "receipt"
+    ? "The uploader identified this image as a terminal receipt. Use the date printed on each receipt as the trip date."
+    : documentType === "trip_card"
+      ? "The uploader identified this image as a handwritten trip card. Keep each date written on the trip card."
+      : "Identify whether this is a receipt or trip card and use the date printed on that document."
   const { output, info } = await withModelRotation("vision", async (model, candidateInfo) => {
     const { output } = await generateText({
       model,
@@ -182,7 +188,7 @@ export async function extractTripsFromImage(
         {
           role: "user",
           content: [
-            { type: "text", text: TRIP_EXTRACTION_PROMPT },
+            { type: "text", text: `${documentInstruction}\n\n${TRIP_EXTRACTION_PROMPT}` },
             { type: "image", image: imageBase64DataUrl },
           ],
         },

@@ -3,8 +3,9 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { updateRate } from "@/app/actions/trips"
-import { updateSetting, changeOwnerPassword } from "@/app/actions/settings"
+import { changeOwnerPassword, updateDriverPaySettings, updateSetting } from "@/app/actions/settings"
 import type { Rate } from "@/lib/db/schema"
+import { DRIVER_PAY_SETTING_KEYS, type DriverPaySettingKey, type DriverPaySettingsInput } from "@/lib/driver-pay"
 import { formatINR } from "@/lib/domain"
 import { DEFAULT_IMAGE_RETENTION_DAYS, IMAGE_RETENTION_SETTING_KEY } from "@/lib/retention"
 import { Button } from "@/components/ui/button"
@@ -46,6 +47,13 @@ const BANK_FIELDS: Array<{ key: string; label: string }> = [
   { key: "authorized_signatory", label: "Authorized signatory name" },
 ]
 
+const DRIVER_PAY_FIELDS: Array<{ key: DriverPaySettingKey; label: string; help: string }> = [
+  { key: "driver_salary_base", label: "Monthly base salary", help: "Included in each listed driver's estimate; not prorated." },
+  { key: "driver_commission_40", label: "Commission per 40 ft trip", help: "Added once for each 40 ft trip." },
+  { key: "driver_commission_20_single", label: "Commission per single 20 ft trip", help: "Added once for each single-container 20 ft trip." },
+  { key: "driver_commission_20_double", label: "Commission per double 20 ft trip", help: "Added once for each two-container 20 ft trip." },
+]
+
 const EMPTY_PW = { currentPassword: "", newPassword: "", confirmPassword: "" }
 
 export function SettingsClient({
@@ -59,6 +67,8 @@ export function SettingsClient({
   const [rateDrafts, setRateDrafts] = useState<Record<number, string>>({})
   const [settingDrafts, setSettingDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
+  const [driverPayDrafts, setDriverPayDrafts] = useState<Partial<Record<DriverPaySettingKey, string>>>({})
+  const [driverPayBusy, setDriverPayBusy] = useState(false)
   const [pwDraft, setPwDraft] = useState(EMPTY_PW)
   const [pwBusy, setPwBusy] = useState(false)
   const [showPw, setShowPw] = useState(false)
@@ -106,6 +116,32 @@ export function SettingsClient({
       toast.error(err instanceof Error ? err.message : "Failed to change password")
     } finally {
       setPwBusy(false)
+    }
+  }
+
+  async function saveDriverPay() {
+    const input = Object.fromEntries(
+      DRIVER_PAY_SETTING_KEYS.map((key) => [key, driverPayDrafts[key] ?? settings[key] ?? ""]),
+    ) as DriverPaySettingsInput
+    if (DRIVER_PAY_SETTING_KEYS.some((key) => String(input[key]).trim() === "")) {
+      toast.error("Enter all four driver salary amounts")
+      return
+    }
+    if (DRIVER_PAY_SETTING_KEYS.every((key) => String(input[key]) === (settings[key] ?? ""))) {
+      toast.info("No driver salary changes to save")
+      return
+    }
+
+    setDriverPayBusy(true)
+    try {
+      await updateDriverPaySettings(input)
+      toast.success("Driver salary settings updated")
+      setDriverPayDrafts({})
+      router.refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update driver salary settings")
+    } finally {
+      setDriverPayBusy(false)
     }
   }
 
@@ -177,6 +213,44 @@ export function SettingsClient({
           <Button onClick={saveRates} disabled={busy} className="self-end">
             {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
             Save Rates
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Driver salary &amp; trip commissions</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <p className="text-sm text-muted-foreground text-pretty">
+            These amounts estimate driver pay on the owner dashboard. They are separate from the
+            customer billing rates above. Enter nonnegative whole rupee amounts.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {DRIVER_PAY_FIELDS.map((field) => (
+              <div key={field.key} className="flex flex-col gap-1.5">
+                <Label htmlFor={`pay-${field.key}`} className="text-xs">
+                  {field.label} (₹)
+                </Label>
+                <Input
+                  id={`pay-${field.key}`}
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  value={driverPayDrafts[field.key] ?? settings[field.key] ?? ""}
+                  onChange={(event) => setDriverPayDrafts((drafts) => ({
+                    ...drafts,
+                    [field.key]: event.target.value,
+                  }))}
+                />
+                <p className="text-xs text-muted-foreground">{field.help}</p>
+              </div>
+            ))}
+          </div>
+          <Button onClick={saveDriverPay} disabled={driverPayBusy} className="self-end">
+            {driverPayBusy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+            Save Driver Salary
           </Button>
         </CardContent>
       </Card>

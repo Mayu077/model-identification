@@ -2,7 +2,8 @@
 
 import { useRef, useState } from "react"
 import { saveTrips, type SaveTripsResult } from "@/app/actions/trips"
-import { containerWarning, type ExtractedTrip } from "@/lib/domain"
+import type { DriverUploadRequest } from "@/app/actions/scan-requests"
+import { containerWarning, formatDateDDMMYYYY, type ExtractedTrip } from "@/lib/domain"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -42,7 +43,7 @@ interface ScanJobStatus {
   imageHeight?: number | null
 }
 
-export function ScanClient() {
+export function ScanClient({ request = null }: { request?: DriverUploadRequest | null }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const [preview, setPreview] = useState<string | null>(null)
@@ -51,6 +52,7 @@ export function ScanClient() {
   const [rows, setRows] = useState<ReviewTrip[] | null>(null)
   const [modelUsed, setModelUsed] = useState<string | null>(null)
   const [result, setResult] = useState<SaveTripsResult | null>(null)
+  const [activeRequest, setActiveRequest] = useState<DriverUploadRequest | null>(request)
   // Set once the scan finishes, so each review row can show its own strip of the
   // stored card. Served through /api/scan/image, not the local object URL: the
   // stored copy is the exact image the model read and the one that survives a
@@ -94,7 +96,65 @@ export function ScanClient() {
     return { blob: blob ?? file, width: canvas.width, height: canvas.height }
   }
 
+  async function loadScanResult(jobId: string, initialStatus: string) {
+    let job: ScanJobStatus = { status: initialStatus }
+    for (let attempt = 0; attempt < 170; attempt++) {
+      if (["queued", "processing"].includes(job.status)) {
+        await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 1000 : 2000))
+      }
+      const statusResponse = await fetch(`/api/scan?id=${encodeURIComponent(jobId)}`, { cache: "no-store" })
+      if (statusResponse.redirected || [401, 403].includes(statusResponse.status)) {
+        throw new Error("Your session expired while the document was being read — sign in again and the result will still be here.")
+      }
+      job = await statusResponse.json().catch(() => {
+        throw new Error("Could not check scan status — please retry.")
+      })
+      if (!statusResponse.ok) throw new Error(job.errorMessage || "Could not check scan status")
+      if (!["queued", "processing"].includes(job.status)) break
+    }
+    if (job.status === "failed") throw new Error(job.errorMessage || "Scan extraction failed")
+    if (job.status !== "succeeded") throw new Error("Scan is taking longer than expected. You can safely retry.")
+
+    setModelUsed(job.result?.modelUsed ?? null)
+    const trips: ReviewTrip[] = (job.result?.trips ?? []).map((trip) => ({
+      ...trip,
+      sourceBox: trip.sourceBox ?? null,
+      include: !trip.isDuplicate,
+    }))
+    if (trips.length === 0) toast.warning("No trips found in this image. Try a clearer photo.")
+    if (job.hasImage) {
+      setCard({
+        jobId,
+        src: `/api/scan/image/${encodeURIComponent(jobId)}`,
+        aspect: job.imageWidth && job.imageHeight ? job.imageWidth / job.imageHeight : null,
+      })
+    }
+    setRows(trips)
+  }
+
+  async function handleRequest(nextRequest: DriverUploadRequest) {
+    setActiveRequest(nextRequest)
+    setResult(null)
+    setRows(null)
+    setCard(null)
+    setPreview(`/api/scan/image/${encodeURIComponent(nextRequest.id)}`)
+    setScanning(true)
+    try {
+      const formData = new FormData()
+      formData.append("requestJobId", nextRequest.id)
+      const response = await fetch("/api/scan", { method: "POST", body: formData })
+      const data = await response.json().catch(() => ({ error: "Could not start scan" }))
+      if (!response.ok) throw new Error(data.error || "Could not start scan")
+      await loadScanResult(data.jobId ?? nextRequest.id, data.status ?? nextRequest.status)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Scan failed")
+    } finally {
+      setScanning(false)
+    }
+  }
+
   async function handleFile(file: File) {
+    setActiveRequest(null)
     setResult(null)
     setRows(null)
     setCard(null)
@@ -138,45 +198,7 @@ export function ScanClient() {
       if (!res.ok) throw new Error(data.error || "Scan failed")
       const queued = data as typeof data & { jobId?: string; status?: string }
       if (!queued.jobId) throw new Error("Scan job was not created")
-      let job: ScanJobStatus = { status: queued.status ?? "queued" }
-      // Extraction is normally 10-20s now that Gemini's thinking budget is off,
-      // but a card that has to rotate through several busy models can still take
-      // a couple of minutes, and the server allows up to 300s. Poll fast at first
-      // so the common case feels immediate, then settle down.
-      for (let attempt = 0; attempt < 170 && ["queued", "processing"].includes(job.status); attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 1000 : 2000))
-        const statusResponse = await fetch(`/api/scan?id=${encodeURIComponent(queued.jobId)}`, { cache: "no-store" })
-        if (statusResponse.redirected || [401, 403].includes(statusResponse.status)) {
-          throw new Error("Your session expired while the card was being read — sign in again and the result will still be here.")
-        }
-        job = await statusResponse.json().catch(() => {
-          throw new Error("Could not check scan status — please retry.")
-        })
-        if (!statusResponse.ok) throw new Error(job.errorMessage || "Could not check scan status")
-      }
-      if (job.status === "failed") throw new Error(job.errorMessage || "Scan extraction failed")
-      if (job.status !== "succeeded") throw new Error("Scan is taking longer than expected. You can safely retry.")
-      data.trips = job.result?.trips ?? []
-      setModelUsed(job.result?.modelUsed ?? null)
-      const trips: ReviewTrip[] = (data.trips ?? []).map((t) => ({
-        ...t,
-        sourceBox: t.sourceBox ?? null,
-        include: !t.isDuplicate,
-      }))
-      if (trips.length === 0) {
-        toast.warning("No trips found in this image. Try a clearer photo.")
-      }
-      if (job.hasImage) {
-        setCard({
-          jobId: queued.jobId,
-          src: `/api/scan/image/${encodeURIComponent(queued.jobId)}`,
-          // Without both dimensions the crop cannot be sized to the row, so the
-          // preview falls back to its magnified mode instead of guessing.
-          aspect:
-            job.imageWidth && job.imageHeight ? job.imageWidth / job.imageHeight : null,
-        })
-      }
-      setRows(trips)
+      await loadScanResult(queued.jobId, queued.status ?? "queued")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Scan failed")
     } finally {
@@ -223,6 +245,7 @@ export function ScanClient() {
         setPreview(null)
         setCard(null)
         setModelUsed(null)
+        setActiveRequest(null)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Save failed")
@@ -252,6 +275,23 @@ export function ScanClient() {
                   Reading trip card with AI…
                 </div>
               </>
+            ) : activeRequest ? (
+              <>
+                {activeRequest.hasImage && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`/api/scan/image/${encodeURIComponent(activeRequest.id)}`} alt="Document uploaded by driver" className="max-h-72 rounded-md border border-border object-contain" />
+                )}
+                <div className="text-center">
+                  <p className="font-medium">{activeRequest.driverName ?? "Driver"}’s {activeRequest.documentType === "receipt" ? "terminal receipt" : "trip card"}</p>
+                  <p className="text-sm text-muted-foreground">The printed document date will be kept unless you choose the driver’s requested date during review.</p>
+                </div>
+                {activeRequest.requestedTripDate && <p className="text-sm"><span className="text-muted-foreground">Requested date:</span> {formatDateDDMMYYYY(activeRequest.requestedTripDate)}</p>}
+                {activeRequest.requestNotes && <p className="max-w-xl rounded-md bg-muted px-3 py-2 text-sm italic">“{activeRequest.requestNotes}”</p>}
+                <Button onClick={() => handleRequest(activeRequest)} disabled={!activeRequest.hasImage}>
+                  <ScanLine className="size-4" aria-hidden />
+                  {activeRequest.status === "succeeded" ? "Open scan for review" : activeRequest.status === "failed" ? "Retry scan" : "Scan this upload"}
+                </Button>
+              </>
             ) : (
               <>
                 <div className="rounded-full bg-primary/10 p-4 text-primary">
@@ -264,35 +304,15 @@ export function ScanClient() {
                   </p>
                 </div>
                 <div className="flex gap-3">
-                  <Button
-                    variant="outline"
-                    onClick={() => cameraInputRef.current?.click()}
-                  >
-                    <Camera className="mr-2 size-4" aria-hidden />
-                    Take Photo
+                  <Button variant="outline" onClick={() => cameraInputRef.current?.click()}>
+                    <Camera className="mr-2 size-4" aria-hidden /> Take Photo
                   </Button>
                   <Button onClick={() => fileInputRef.current?.click()}>
-                    <Upload className="mr-2 size-4" aria-hidden />
-                    Choose File
+                    <Upload className="mr-2 size-4" aria-hidden /> Choose File
                   </Button>
                 </div>
-                <input
-                  ref={cameraInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="sr-only"
-                  aria-label="Take photo with camera"
-                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="sr-only"
-                  aria-label="Upload trip card image"
-                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
-                />
+                <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="sr-only" aria-label="Take photo with camera" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+                <input ref={fileInputRef} type="file" accept="image/*" className="sr-only" aria-label="Upload trip card image" onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
               </>
             )}
           </CardContent>
@@ -302,6 +322,22 @@ export function ScanClient() {
       {/* Review table */}
       {rows && (
         <div className="flex flex-col gap-4">
+          {activeRequest && (activeRequest.requestNotes || activeRequest.requestedTripDate) && (
+            <Card>
+              <CardContent className="flex flex-col gap-2 py-4">
+                <p className="text-sm font-medium">Request from {activeRequest.driverName ?? "driver"}</p>
+                {activeRequest.requestNotes && <p className="text-sm text-muted-foreground">“{activeRequest.requestNotes}”</p>}
+                {activeRequest.requestedTripDate && (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm">Driver asks for {formatDateDDMMYYYY(activeRequest.requestedTripDate)}</p>
+                    <Button size="sm" variant="outline" onClick={() => setRows((current) => current?.map((row) => ({ ...row, tripDate: activeRequest.requestedTripDate! })) ?? current)}>
+                      Use this date for all rows
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <span>

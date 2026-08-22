@@ -11,7 +11,7 @@ export default async function SettingsPage() {
       <header className="mb-6">
         <h1 className="text-xl font-semibold text-foreground">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Trip rates and business details used on the bill.
+          Customer trip rates, driver salary settings, and business details.
         </p>
       </header>
       <SettingsClient rates={rates} settings={settings} />
